@@ -2677,12 +2677,12 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
 @app.get("/api/files/read")
 async def read_managed_file(request: Request, path: str):
     policy, target, display_path = _resolve_managed_path(path, request)
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     if not target.exists():
         raise HTTPException(status_code=404, detail="File not found")
     if not target.is_file():
         raise HTTPException(status_code=400, detail="Path is not a file")
-    if _is_sensitive_path(target):
-        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
 
     try:
         size = target.stat().st_size
@@ -2836,12 +2836,12 @@ async def download_managed_file(request: Request, path: str):
     for the same query-token precedent.
     """
     policy, target, _display_path = _resolve_managed_path(path, request)
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     if not target.exists():
         raise HTTPException(status_code=404, detail="File not found")
     if not target.is_file():
         raise HTTPException(status_code=400, detail="Path is not a file")
-    if _is_sensitive_path(target):
-        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
 
     try:
         size = target.stat().st_size

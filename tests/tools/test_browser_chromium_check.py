@@ -31,6 +31,7 @@ class TestChromiumSearchRoots:
         packaged = runtime / "browser" / "agent-browser.exe"
         packaged.parent.mkdir(parents=True)
         packaged.write_bytes(b"binary")
+        packaged.chmod(0o755)
         monkeypatch.setattr(bt, "agent_browser_runnable", lambda path: path == str(packaged))
         monkeypatch.setattr(bt, "_cached_agent_browser", "C:/global/agent-browser.exe")
         monkeypatch.setattr(bt, "_agent_browser_resolved", True)

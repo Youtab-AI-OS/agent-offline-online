@@ -54,7 +54,13 @@
     "yauzl": "^3.3.1",
     "protobufjs": "^8.7.1",
     "dompurify": "3.4.16",
-    "sanitize-html": "2.17.7"
+    "sanitize-html": "2.17.7",
+    "@tailwindcss/typography@0.5.20": {
+      "postcss-selector-parser": "6.1.5"
+    },
+    "micromark-extension-math@3.1.0": {
+      "katex": "0.19.1"
+    }
   },
   "engines": {
     "node": ">=22.12.0"

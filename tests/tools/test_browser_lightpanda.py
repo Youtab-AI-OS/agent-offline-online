@@ -1,5 +1,6 @@
 """Tests for Lightpanda engine support in browser_tool.py."""
 
+import base64
 import json
 import os
 from unittest.mock import MagicMock, patch
@@ -232,7 +233,9 @@ class TestLightpandaFallbackWarning:
     def test_browser_vision_lightpanda_response_has_structured_fallback(self, tmp_path):
 
         chrome_shot = tmp_path / "chrome-structured.png"
-        chrome_shot.write_bytes(b"\x89PNG" + b"0" * 128)
+        chrome_shot.write_bytes(base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        ))
 
         class _Msg:
             content = "Example Domain screenshot"

@@ -67,41 +67,61 @@ function waitForOwnedSleeper(marker: string, timeoutMs = 5000): Promise<void> {
     const settle = (error?: unknown) => {
       clearInterval(poll)
       clearTimeout(deadline)
-      if (error !== undefined) reject(error)
-      else resolve()
+
+      if (error !== undefined) {
+        reject(error)
+      } else {
+        resolve()
+      }
     }
+
     const poll = setInterval(() => {
       try {
-        if (!existsSync(marker + '.done')) return
+        if (!existsSync(marker + '.done')) {
+          return
+        }
+
         const pidText = readFileSync(marker, 'utf8')
         const pid = Number(pidText)
+
         if (!/^[1-9][0-9]*$/.test(pidText) || !Number.isSafeInteger(pid)) {
           throw new Error('Owned child PID handshake is invalid')
         }
+
         if (process.platform === 'linux') {
           try {
-            if (readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes(sleeperScript)) return
+            if (readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes(sleeperScript)) {
+              return
+            }
           } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+              throw error
+            }
           }
         }
+
         settle()
       } catch (error) {
         settle(error)
       }
     }, 20)
+
     const deadline = setTimeout(() => settle(new Error('Owned child completion handshake timed out; fixture preserved')), timeoutMs)
   })
 }
+
 afterEach(async () => {
   const current = lstatSync(scriptDir, { bigint: true })
+
   if (!current.isDirectory() || current.isSymbolicLink() ||
       current.dev !== scriptIdentity.dev || current.ino !== scriptIdentity.ino) {
     throw new Error('Owned fixture directory changed')
   }
+
   for (const marker of sleeperFiles) {
     writeFileSync(marker + '.release', 'release', { flag: 'wx', mode: 0o600 })
   }
+
   // A failure preserves the fixture: termination has not been established.
   await Promise.all(sleeperFiles.map(marker => waitForOwnedSleeper(marker)))
   rmSync(scriptDir, { recursive: true, force: true })
@@ -120,6 +140,7 @@ it('rejects malformed completed child handshakes through the promise', async () 
 })
 it('uses an exclusive owned temporary fixture directory', () => {
   expect(existsSync(daemonScript)).toBe(true)
+
   if (!onWindows) {
     expect(statSync(scriptDir).mode & 0o777).toBe(0o700)
     expect(statSync(daemonScript).mode & 0o777).toBe(0o700)

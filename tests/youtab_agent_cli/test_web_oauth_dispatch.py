@@ -522,7 +522,7 @@ def test_oauth_provider_listing_does_not_block_runtime_requests(monkeypatch):
                     await asyncio.sleep(0.01)
                 assert entered.is_set()
                 assert not listing.done(), "provider listing blocked the event loop"
-                response = await asyncio.wait_for(http.get("/api/status"), 1)
+                response = await asyncio.wait_for(http.get("/api/health"), 1)
                 assert response.status_code == 200, response.text
             finally:
                 release.set()

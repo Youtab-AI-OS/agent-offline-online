@@ -24,6 +24,8 @@ import pytest
 
 from tools.environments.local import LocalEnvironment, _quote_bash_path
 
+pytestmark = pytest.mark.live_system_guard_bypass
+
 
 def _python_command(code: str) -> str:
     return _quote_bash_path(sys.executable) + " -c " + shlex.quote(code)

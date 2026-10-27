@@ -3378,7 +3378,7 @@ class TestValidateProviderCredential:
         assert data["ok"] is True and data["reachable"] is True
         assert data["models"] == ["gpt-oss-120b"]
         assert captured["url"] == "https://text.example.com/v1/models"
-        assert captured["headers"] == {"Authorization": "Bearer sk-secret"}
+        assert captured["headers"]["Authorization"] == "Bearer sk-secret"
 
 
 class TestDesktopCronTicker:

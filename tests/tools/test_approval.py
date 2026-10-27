@@ -114,7 +114,8 @@ class TestDetectDangerousRm:
                 assert artifact.read_bytes() == b"synthetic verification artifact"
 
     def test_posix_tmp_spelling_does_not_bypass_windows_approval(self, tmp_path):
-        with mock_patch("tempfile.gettempdir", return_value=str(tmp_path)):
+        native_temp = tmp_path if os.name == "nt" else Path("/tmp")
+        with mock_patch("tempfile.gettempdir", return_value=str(native_temp)):
             for prefix in ("youtab-verify-", "youtab-ad-hoc-"):
                 result = detect_dangerous_command(f"rm -f /tmp/{prefix}example.py")
                 if os.name == "nt":

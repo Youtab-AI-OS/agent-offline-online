@@ -216,7 +216,7 @@ jobs:
           $targetDir = Join-Path $env:RUNNER_TEMP 'youtab-native-cargo'
           New-Item -ItemType Directory -Path $qaParent,$targetDir -Force | Out-Null
           $env:PSModuleAnalysisCachePath = Join-Path $qaParent 'ModuleAnalysisCache'
-          $pythonExe = (Get-Command python.exe -CommandType Application).Source
+          $pythonExe = Join-Path $env:pythonLocation 'python.exe'
           $pythonHash = (Get-FileHash -LiteralPath $pythonExe -Algorithm SHA256).Hash
           & ./scripts/test-native-windows.ps1 -Python $pythonExe -PythonSha256 $pythonHash -PrivateQaRoot $qaParent -CargoTargetDir $targetDir -CargoHome $nativeCargoHome -RustupHome $nativeRustupHome
       - name: Install both wake-word backends at the shipped pins
