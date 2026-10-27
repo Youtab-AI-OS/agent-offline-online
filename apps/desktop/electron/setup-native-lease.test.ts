@@ -49,7 +49,10 @@ test.skipIf(!nativeAddon)('native Setup lease holds the named image and its pare
       assert.throws(() => fs.writeFileSync(executable, Buffer.alloc(512, 0x42)))
     } finally { native.release(l1); native.release(l2) }
 
-    fs.writeFileSync(executable, Buffer.alloc(512, 0x42))
+    const replacement = fs.openSync(executable, 'r+')
+
+    try {fs.writeSync(replacement, Buffer.alloc(512, 0x42), 0, 512, 0)}
+    finally {fs.closeSync(replacement)}
     assert.throws(() => native.acquire(executable, digest, image.length), /SETUP_LEASE_IDENTITY/)
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })

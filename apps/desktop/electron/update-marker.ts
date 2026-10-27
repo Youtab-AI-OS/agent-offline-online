@@ -128,7 +128,7 @@ function readMarkerExclusion(
 
   try {
     file = markerPath(trustedHome(youtabHome).directory)
-    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0))
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0), 0o600)
     identity = fs.fstatSync(fd, { bigint: true })
     const before = fs.lstatSync(file, { bigint: true })
 
@@ -213,7 +213,7 @@ function windowsInstallExclusion(directory: string): UpdateExclusion | null {
   let fd
 
   try {
-    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0))
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0), 0o600)
     const opened = fs.fstatSync(fd, { bigint: true })
     const before = fs.lstatSync(file, { bigint: true })
 
