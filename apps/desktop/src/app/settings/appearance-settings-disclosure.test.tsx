@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import type * as I18n from '@/i18n'
 import { $backdropOpacity, setBackdrop, setBackdropOpacity } from '@/store/backdrop'
 
 import { AppearanceSettings } from './appearance-settings'
@@ -31,7 +32,7 @@ vi.mock('./pet-settings', () => ({
   }
 }))
 vi.mock('@/i18n', async importOriginal => {
-  const original = await importOriginal<typeof import('@/i18n')>()
+  const original = await importOriginal<typeof I18n>()
   const base = original.useI18n
 
   return {

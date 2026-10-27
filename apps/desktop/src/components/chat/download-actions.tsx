@@ -124,20 +124,20 @@ export function DownloadActions({
       <span className="inline-flex flex-wrap items-center justify-end gap-1">
         <Button
           aria-label={t.artifactPreview.download}
-          title={t.artifactPreview.download}
           disabled={disabled || busy}
           onClick={() => void run('download')}
           size="icon-xs"
+          title={t.artifactPreview.download}
           variant="ghost"
         >
           <Download aria-hidden="true" className="size-3" />
         </Button>
         <Button
           aria-label={copy.saveAs}
-          title={copy.saveAs}
           disabled={disabled || busy || (!window.youtabDesktop?.exportContent && !window.youtabDesktop?.exportFile)}
           onClick={() => void run('save-as')}
           size="icon-xs"
+          title={copy.saveAs}
           variant="ghost"
         >
           <Save aria-hidden="true" className="size-3" />

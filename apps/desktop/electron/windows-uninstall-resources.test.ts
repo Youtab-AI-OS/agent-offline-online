@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
 import { WINDOWS_OWNED_TREE_FUNCTIONS } from './windows-full-uninstall'
@@ -74,7 +75,7 @@ function fixture() {
     aliasDirectory,
     scripts
   ])
-    fs.mkdirSync(directory, { recursive: true })
+    {fs.mkdirSync(directory, { recursive: true })}
   const defaultLauncher = path.join(root, 'gateway-service', 'Youtab_Gateway.vbs')
   const namedLauncher = path.join(named, 'gateway-service', 'Youtab_Gateway_work.vbs')
   const foreignLauncher = path.join(foreign, 'gateway-service', 'Youtab_Gateway_foreign.vbs')
@@ -199,9 +200,9 @@ if($folder.Deleted.Count -ne 2 -or $folder.Tasks.Count -ne 1 -or $defaultTask.St
 `
       )
       for (const alias of ['mine', 'custom-one', 'custom-two', 'legacy-crlf'])
-        expect(fs.existsSync(path.join(f.data.aliasDirectory, alias + '.bat'))).toBe(false)
+        {expect(fs.existsSync(path.join(f.data.aliasDirectory, alias + '.bat'))).toBe(false)}
       for (const alias of ['foreign', 'other-vendor'])
-        expect(fs.existsSync(path.join(f.data.aliasDirectory, alias + '.bat'))).toBe(true)
+        {expect(fs.existsSync(path.join(f.data.aliasDirectory, alias + '.bat'))).toBe(true)}
       expect(fs.existsSync(path.join(f.data.startupDirectory, 'Youtab_Gateway_foreign.vbs'))).toBe(true)
       expect(fs.existsSync(f.data.defaultLauncher)).toBe(true)
       expect(fs.existsSync(f.data.foreignLauncher)).toBe(true)

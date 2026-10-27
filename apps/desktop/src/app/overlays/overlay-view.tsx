@@ -5,11 +5,11 @@ import { Backdrop } from '@/components/Backdrop'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { translateNow, useI18n } from '@/i18n'
-import { Moon, Sun } from '@/lib/icons'
-import { useTheme } from '@/themes/context'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
 import { triggerHaptic } from '@/lib/haptics'
+import { Moon, Sun } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { useTheme } from '@/themes/context'
 
 // Shared top clearance for overlay content that sits *beside* the floating
 // close button (which is absolute at `0.1875rem + titlebar/2`, -translate-y-1/2,
@@ -101,11 +101,11 @@ export function OverlayView({
     >
       <Backdrop />
       <div
-        data-slot="route-overlay-card"
         className={cn(
           'relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-surface-background) shadow-md',
           rootClassName
         )}
+        data-slot="route-overlay-card"
       >
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-[calc(var(--titlebar-height)+0.1875rem)] [-webkit-app-region:drag]">
           <span data-slot="overlay-brand" dir="ltr">

@@ -215,7 +215,7 @@ describe('ProvidersSettings', () => {
     getEnvVars.mockImplementation(() => new Promise(() => {}))
     const { ProvidersSettings } = await import('./providers-settings')
     render(<MemoryRouter><ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="custom-endpoints" /></MemoryRouter>)
-    expect(await screen.findByLabelText('Endpoint URL')).toBeTruthy()
+    expect(await screen.findByLabelText('Model server address')).toBeTruthy()
     expect(getCustomEndpoints).toHaveBeenCalledOnce()
   })
 

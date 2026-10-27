@@ -1,11 +1,11 @@
 import { type ChildProcess, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
-import path from 'node:path'
 import type { Socket } from 'node:net'
+import path from 'node:path'
 
-import { powershellInlineInput } from './windows-powershell-input'
 import type { SetupLease } from './setup-native-lease'
+import { powershellInlineInput } from './windows-powershell-input'
 
 export interface WindowsMaintenanceHelperInput {
   installRoot: string
@@ -81,7 +81,7 @@ export async function releaseWindowsMaintenanceHelper(child: ChildProcess): Prom
     const onExit=()=>fail('Maintenance helper exited before lifetime release.')
     const timer=setTimeout(()=>fail('Maintenance lifetime acknowledgement was not received.'),5000)
     state.control.on('data',onData);state.control.once('error',onError);child.once('exit',onExit)
-    state.control.write('release\n',error=>{if(error)onError()})
+    state.control.write('release\n',error=>{if(error){onError()}})
   })
   return state.release
 }

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
+
 import { SettingsContent } from './primitives'
 
 export function OrganizationAdminSettings() {
@@ -26,7 +27,7 @@ export function OrganizationAdminSettings() {
         }
       })
       .catch(() => {
-        if (live) setError(true)
+        if (live) {setError(true)}
       })
     return () => {
       live = false
@@ -43,12 +44,12 @@ export function OrganizationAdminSettings() {
         <label className="grid gap-2">
           <span>{copy.serverUrl}</span>
           <Input
-            dir="ltr"
-            type="url"
-            value={url}
             autoComplete="off"
+            dir="ltr"
             disabled={!loaded || busy}
             onChange={event => setUrl(event.target.value)}
+            type="url"
+            value={url}
           />
         </label>
         <p className="text-sm text-muted-foreground">{copy.linkOnly}</p>
@@ -72,7 +73,6 @@ export function OrganizationAdminSettings() {
             {t.common.save}
           </Button>
           <Button
-            variant="outline"
             disabled={!saved || busy || url.trim() !== saved}
             onClick={async () => {
               setBusy(true)
@@ -85,6 +85,7 @@ export function OrganizationAdminSettings() {
                 setBusy(false)
               }
             }}
+            variant="outline"
           >
             {copy.openAdmin}
           </Button>

@@ -90,9 +90,9 @@ describe('ModelMenuPanel MoA presets', () => {
     const { content } = renderPanel()
 
     const row = await content.findByText('MoA: BeastMode')
-    // The check codicon renders as a sibling within the same row item.
+    // The current Tabler check renders as a sibling within the same row item.
     const item = row.closest('[role="menuitem"]') ?? row.parentElement
-    expect(item?.querySelector('.codicon-check')).not.toBeNull()
+    expect(item?.querySelector('.tabler-icon-check')).not.toBeNull()
   })
 
   it('keeps the virtual moa provider out of the main model groups (presets section only)', async () => {
@@ -139,8 +139,8 @@ describe('ModelMenuPanel current selection', () => {
     const currentRow = (await content.findByText(/Gemini 3\.1 Pro/i)).closest('[role="menuitem"]')
     const staleRow = content.getByText('Deepseek Chat').closest('[role="menuitem"]')
 
-    expect(currentRow?.querySelector('.codicon-check')).not.toBeNull()
-    expect(staleRow?.querySelector('.codicon-check')).toBeNull()
+    expect(currentRow?.querySelector('.tabler-icon-check')).not.toBeNull()
+    expect(staleRow?.querySelector('.tabler-icon-check')).toBeNull()
   })
 })
 

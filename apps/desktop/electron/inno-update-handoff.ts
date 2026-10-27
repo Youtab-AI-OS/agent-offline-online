@@ -6,9 +6,9 @@ import path from 'node:path'
 import type { InnoUpdateControllerDependencies } from './inno-update-controller'
 import { type InnoUpdateTrustRoot, validateInnoUpdateTrustRoot } from './inno-update-release'
 import { buildInnoUpdateTransactionScript } from './inno-update-transaction'
+import type { SetupLease } from './setup-native-lease'
 import { cancelUninstallHelper, type CommonWindowsUninstallPlan, waitForUninstallReady } from './windows-full-uninstall'
 import { releaseWindowsMaintenanceHelper, spawnWindowsMaintenanceHelper } from './windows-maintenance-helper'
-import type { SetupLease } from './setup-native-lease'
 
 export interface InnoUpdateHandoffHost {
   trust: InnoUpdateTrustRoot

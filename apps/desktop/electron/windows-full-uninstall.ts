@@ -1,9 +1,10 @@
-import path from 'node:path'
-import fs from 'node:fs'
 import type { ChildProcess } from 'node:child_process'
-import { WINDOWS_UNINSTALL_RESOURCE_FUNCTIONS } from './windows-uninstall-resources'
-import { WINDOWS_UNINSTALL_GATEWAY_FUNCTIONS } from './windows-uninstall-gateway-processes'
+import fs from 'node:fs'
+import path from 'node:path'
+
 import { releaseWindowsMaintenanceHelper } from './windows-maintenance-helper'
+import { WINDOWS_UNINSTALL_GATEWAY_FUNCTIONS } from './windows-uninstall-gateway-processes'
+import { WINDOWS_UNINSTALL_RESOURCE_FUNCTIONS } from './windows-uninstall-resources'
 export { powershellInlineInput } from './windows-powershell-input'
 
 export interface CommonWindowsUninstallInput {
@@ -46,11 +47,11 @@ export async function waitForUninstallReady(child: ChildProcess, handoff: Uninst
     }
     const until = Date.now() + timeoutMs
     do {
-      if (startupError) throw startupError
-      if (child.exitCode !== null) throw new Error(reason('Uninstall helper exited before it was ready.'))
+      if (startupError) {throw startupError}
+      if (child.exitCode !== null) {throw new Error(reason('Uninstall helper exited before it was ready.'))}
       try {
         const ready = fs.readFileSync(path.join(handoff.directory, marker), 'utf8')
-        if (ready === handoff.token) return
+        if (ready === handoff.token) {return}
       } catch { /* The helper has not completed preflight yet. */ }
       await new Promise(resolve => setTimeout(resolve, 50))
     } while (Date.now() < until)
@@ -61,7 +62,7 @@ export async function waitForUninstallReady(child: ChildProcess, handoff: Uninst
 }
 
 export async function cancelUninstallHelper(child: ChildProcess, handoff: UninstallHandoff, timeoutMs = 10000): Promise<boolean> {
-  if (!child.pid || child.exitCode !== null) return true
+  if (!child.pid || child.exitCode !== null) {return true}
   try { fs.writeFileSync(path.join(handoff.directory, 'cancel'), handoff.token, {encoding:'utf8'}) }
   catch { /* A failed preflight may already have closed its handoff. */ }
   await new Promise<void>(resolve => {
@@ -69,9 +70,9 @@ export async function cancelUninstallHelper(child: ChildProcess, handoff: Uninst
     const timer = setTimeout(done, timeoutMs)
     child.once('exit', done)
     child.once('error', done)
-    if (child.exitCode !== null) done()
+    if (child.exitCode !== null) {done()}
   })
-  if (child.exitCode !== null) return true
+  if (child.exitCode !== null) {return true}
   let preflightCompleted = false
   try { preflightCompleted = fs.readFileSync(path.join(handoff.directory, 'ready'), 'utf8') === handoff.token } catch { /* No native effects started. */ }
   // A ready helper may be restoring suspended service state. Never terminate
@@ -80,29 +81,33 @@ export async function cancelUninstallHelper(child: ChildProcess, handoff: Uninst
     try {await releaseWindowsMaintenanceHelper(child)} catch {return false}
     child.unref()
   }
-  else child.kill()
+  else {child.kill()}
   return false
 }
 
 const windows = path.win32
 const normalized = (value: string) => windows.resolve(value).replace(/[\\/]+$/, '').toLowerCase()
 
+function hasUnsafeWindowsPathCharacter(value: string): boolean {
+  return Array.from(value).some(character => character.charCodeAt(0) <= 31 || character === '"' || character === ';')
+}
+
 function localAbsolute(value: string): boolean {
-  return /^[a-z]:[\\/]/i.test(value) && !/[\x00-\x1f";]/.test(value) && !value.slice(2).includes(':')
+  return /^[a-z]:[\\/]/i.test(value) && !hasUnsafeWindowsPathCharacter(value) && !value.slice(2).includes(':')
 }
 
 /** Only the known common-Setup layout can select this destructive path. */
 export function commonWindowsUninstallPlan(input: CommonWindowsUninstallInput): CommonWindowsUninstallPlan {
-  if (!input.packaged || !input.managedContract) throw new Error('A verified common Setup installation is required.')
+  if (!input.packaged || !input.managedContract) {throw new Error('A verified common Setup installation is required.')}
   const values = [input.agentRoot, input.youtabHome, input.executable, input.userData, input.appData, input.userProfile, input.windowsDirectory]
-  if (!values.every(localAbsolute)) throw new Error('Uninstall paths must be absolute local Windows paths.')
-  if (!Number.isSafeInteger(input.desktopPid) || input.desktopPid <= 0) throw new Error('Invalid Desktop process identity.')
+  if (!values.every(localAbsolute)) {throw new Error('Uninstall paths must be absolute local Windows paths.')}
+  if (!Number.isSafeInteger(input.desktopPid) || input.desktopPid <= 0) {throw new Error('Invalid Desktop process identity.')}
   const installRoot = windows.dirname(windows.resolve(input.agentRoot))
   if (normalized(input.agentRoot) !== normalized(windows.join(installRoot, 'youtab-agent-runtime')) || normalized(input.youtabHome) !== normalized(installRoot)) {
     throw new Error('Runtime and data home do not belong to the same Setup installation.')
   }
   const expectedExe = windows.join(input.agentRoot, 'apps', 'desktop', 'release', 'win-unpacked', 'Youtab.exe')
-  if (normalized(input.executable) !== normalized(expectedExe)) throw new Error('Desktop executable is outside the common Setup layout.')
+  if (normalized(input.executable) !== normalized(expectedExe)) {throw new Error('Desktop executable is outside the common Setup layout.')}
   const protectedRoots = [windows.parse(installRoot).root, input.userProfile, input.appData, input.windowsDirectory,
     windows.join(windows.parse(installRoot).root, 'Users'), windows.join(windows.parse(installRoot).root, 'Program Files'),
     windows.join(windows.parse(installRoot).root, 'Program Files (x86)'), windows.join(windows.parse(installRoot).root, 'ProgramData'),
@@ -118,7 +123,7 @@ export function commonWindowsUninstallPlan(input: CommonWindowsUninstallInput): 
   const relative = windows.relative(installRoot, userData)
   const internalUserData = relative !== '' && !relative.startsWith('..') && !windows.isAbsolute(relative)
   const standardUserData = normalized(userData) === normalized(windows.join(input.appData, 'Youtab'))
-  if (!internalUserData && !standardUserData) throw new Error('Custom Desktop data is outside the verified Youtab removal scope.')
+  if (!internalUserData && !standardUserData) {throw new Error('Custom Desktop data is outside the verified Youtab removal scope.')}
   return {installRoot, userData, uninstaller: windows.join(installRoot, 'unins000.exe'), desktopPid: input.desktopPid, protectedRoots,
     startupDirectory: windows.join(input.appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup'),
     aliasDirectory: windows.join(input.userProfile, '.local', 'bin')}

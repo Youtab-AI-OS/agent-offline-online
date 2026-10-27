@@ -2,11 +2,12 @@ import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
-import { buildCommonWindowsFullUninstallScript, cancelUninstallHelper, commonWindowsUninstallPlan, type CommonWindowsUninstallInput, powershellInlineInput, waitForUninstallReady, WINDOWS_OWNED_TREE_FUNCTIONS } from './windows-full-uninstall'
-import { WINDOWS_UNINSTALL_RESOURCE_FUNCTIONS } from './windows-uninstall-resources'
+import { buildCommonWindowsFullUninstallScript, cancelUninstallHelper, type CommonWindowsUninstallInput, commonWindowsUninstallPlan, powershellInlineInput, waitForUninstallReady, WINDOWS_OWNED_TREE_FUNCTIONS } from './windows-full-uninstall'
 import { WINDOWS_UNINSTALL_GATEWAY_FUNCTIONS } from './windows-uninstall-gateway-processes'
+import { WINDOWS_UNINSTALL_RESOURCE_FUNCTIONS } from './windows-uninstall-resources'
 
 const installation: CommonWindowsUninstallInput = {
   packaged: true, managedContract: true,

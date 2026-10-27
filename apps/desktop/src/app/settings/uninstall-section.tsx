@@ -1,9 +1,8 @@
 import { useEffect, useId, useState } from 'react'
 
-import { useI18n } from '@/i18n'
-
 import { Button } from '@/components/ui/button'
 import type { DesktopUninstallMode, DesktopUninstallSummary } from '@/global'
+import { useI18n } from '@/i18n'
 import { AlertTriangle, ChevronDown, Loader2, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 

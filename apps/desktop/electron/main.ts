@@ -32,14 +32,11 @@ import {
 } from 'electron'
 import nodePty from 'node-pty'
 
-import { createProjectWorkingCopy, validateWorkingProjectName } from './project-working-copy'
 import { joinedTranscript, type SyncJournal } from './account-sync'
-import { createMessageReporter, normalizeOrganizationAdminUrl, PERSONAL_REPORT_ORIGIN, reportScopeKey } from './message-reports'
 import { accountSyncService, importAccountSyncSession, syncSessionIdentity } from './account-sync-service'
 import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
-import { hasManagedRuntimeEvidence, managedRuntimeLaunch, parseRuntimeDesktopContract, routeManagedRuntimeFailure, RUNTIME_DESKTOP_CONTRACT } from './runtime-desktop-contract'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeYoutabHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForYoutabReady } from './backend-health'
@@ -110,7 +107,6 @@ import { attachDiagnosticStream } from './diagnostic-stream'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import { exportFileCopy } from './file-export'
-import { downloadExistingFile, downloadGeneratedContent, revealDownloadedFile } from './native-download'
 import { findGitBash as _findGitBash } from './find-git-bash'
 import { installFoundInPageForwarder, performFind, stopFind } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
@@ -161,6 +157,7 @@ import { assertInnoBackendsIdle } from './inno-update-idle'
 import { INNO_METADATA_LIMIT, validateInnoUpdateTrustRoot } from './inno-update-release'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
+import { createMessageReporter, normalizeOrganizationAdminUrl, PERSONAL_REPORT_ORIGIN, reportScopeKey } from './message-reports'
 import {
   oauthGuardMayHardFail,
   oauthSessionIsLive,
@@ -169,6 +166,7 @@ import {
   resolveReadinessProbeAuth
 } from './native-auth-decisions'
 import { bindNativeTokens, createNativeCredentialTransport, requireStoredNativeAuthority, selectNativeGatewayAuthority } from './native-credential-authority'
+import { downloadExistingFile, downloadGeneratedContent, revealDownloadedFile } from './native-download'
 import {
   clearGatewaySessionCredentials,
   completePendingNativeLogout,
@@ -196,6 +194,7 @@ import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-bac
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import { fetchPrimaryProfileSessions } from './profile-session-routing'
+import { createProjectWorkingCopy, validateWorkingProjectName } from './project-working-copy'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import { channelPreferenceStamp, downloadSetup, selectedReleaseChannel, type SetupRelease, verifySetupBytes } from './release-delivery'
@@ -206,6 +205,7 @@ import {
   revalidatePooledRemoteBackends,
   revalidateRemoteConnection
 } from './remote-liveness'
+import { hasManagedRuntimeEvidence, managedRuntimeLaunch, parseRuntimeDesktopContract, routeManagedRuntimeFailure, RUNTIME_DESKTOP_CONTRACT } from './runtime-desktop-contract'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -215,6 +215,7 @@ import {
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { launchSetupHandoffV2 } from './setup-handoff'
+import { acquireSetupLease } from './setup-native-lease'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
@@ -252,6 +253,8 @@ import {
   MIN_WIDTH as WINDOW_MIN_WIDTH
 } from './window-state'
 import { hiddenWindowsChildOptions } from './windows-child-options'
+import { buildCommonWindowsFullUninstallScript, cancelUninstallHelper, commonWindowsUninstallPlan, waitForUninstallReady } from './windows-full-uninstall'
+import { releaseWindowsMaintenanceHelper, spawnWindowsMaintenanceHelper } from './windows-maintenance-helper'
 import {
   buildWindowsInteractiveCommand,
   connectWindowsRemote,
@@ -275,9 +278,6 @@ import {
 import { installWindowsSystemCaTrust } from './windows-system-ca'
 import { canAttemptNativeCustomerHandoff, developmentCoordinationExecutable, packagedCoordinationExecutable, verifyCoordinationSetup } from './windows-update-coordination'
 import { readWindowsUserEnvVar } from './windows-user-env'
-import { commonWindowsUninstallPlan, buildCommonWindowsFullUninstallScript, waitForUninstallReady, cancelUninstallHelper } from './windows-full-uninstall'
-import { releaseWindowsMaintenanceHelper, spawnWindowsMaintenanceHelper } from './windows-maintenance-helper'
-import { acquireSetupLease } from './setup-native-lease'
 import {
   buildPathExtCandidates,
   chooseUpdaterArgs,
@@ -2092,7 +2092,7 @@ function readActiveRuntimeContract() {
   const file = path.join(ACTIVE_YOUTAB_AGENT_ROOT, RUNTIME_DESKTOP_CONTRACT)
   try {
     const metadata = fs.lstatSync(file)
-    if (!metadata.isFile() || metadata.size === 0 || metadata.size > 4096) return null
+    if (!metadata.isFile() || metadata.size === 0 || metadata.size > 4096) {return null}
     return parseRuntimeDesktopContract(fs.readFileSync(file), readBootstrapMarker())
   } catch {
     return null
@@ -7207,13 +7207,13 @@ function readOrganizationAdminLinks(): Record<string, string> {
   try {
     const file = organizationAdminLinksPath()
     const info = fs.lstatSync(file)
-    if (!info.isFile() || info.isSymbolicLink() || info.size > 65536) throw new Error('INVALID_ORGANIZATION_LINK_STORE')
+    if (!info.isFile() || info.isSymbolicLink() || info.size > 65536) {throw new Error('INVALID_ORGANIZATION_LINK_STORE')}
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-      throw new Error('INVALID_ORGANIZATION_LINK_STORE')
+      {throw new Error('INVALID_ORGANIZATION_LINK_STORE')}
     return parsed
   } catch (error: any) {
-    if (error.code === 'ENOENT') return {}
+    if (error.code === 'ENOENT') {return {}}
     throw error
   }
 }
@@ -7232,7 +7232,7 @@ const submitMessageReport = createMessageReporter({
   token: async profile => {
     const tokens = _loadNativeTokens(PERSONAL_REPORT_ORIGIN)
     if (!tokens || tokens.logoutPending || tokens.rotationPending || !tokens.profiles?.includes(profile))
-      throw new Error('REPORT_SIGN_IN_REQUIRED')
+      {throw new Error('REPORT_SIGN_IN_REQUIRED')}
     return (await ensureNativeAccessToken(PERSONAL_REPORT_ORIGIN)) || ''
   },
   request: fetch
@@ -7249,7 +7249,7 @@ ipcMain.handle('youtab:message-report:status', async () => {
   }
 })
 ipcMain.handle('youtab:message-report:submit', (_event, report, scope) => {
-  if (typeof scope !== 'string' || !/^[a-f0-9]{64}$/.test(scope)) throw new Error('REPORT_SCOPE_REQUIRED')
+  if (typeof scope !== 'string' || !/^[a-f0-9]{64}$/.test(scope)) {throw new Error('REPORT_SCOPE_REQUIRED')}
   return submitMessageReport(report, scope)
 })
 ipcMain.handle('youtab:organization-admin:get', () => ({
@@ -7265,7 +7265,7 @@ ipcMain.handle('youtab:organization-admin:save', (_event, raw) => {
 })
 ipcMain.handle('youtab:organization-admin:open', async () => {
   const url = organizationAdminUrl(resolveLiveNativeProviderProfile(null))
-  if (!url) throw new Error('ORGANIZATION_ADMIN_NOT_CONFIGURED')
+  if (!url) {throw new Error('ORGANIZATION_ADMIN_NOT_CONFIGURED')}
   await shell.openExternal(url) // No token or account identifier is placed in the URL.
 })
 
@@ -12652,7 +12652,7 @@ ipcMain.handle('youtab:updates:channel:set', async (_event, channel) => {
 function resolveYoutabVersion() {
   try {
     const contract = readActiveRuntimeContract()
-    if (contract) return contract.version
+    if (contract) {return contract.version}
     const root = resolveUpdateRoot()
     const initPath = path.join(root, 'youtab_agent_cli', '__init__.py')
 
@@ -12810,7 +12810,7 @@ async function runCommonWindowsFullUninstall() {
       desktopPid: process.pid
     })
     const metadata = fs.lstatSync(plan.uninstaller)
-    if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error('The common Setup uninstaller is missing or unsafe.')
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {throw new Error('The common Setup uninstaller is missing or unsafe.')}
     const directory = fs.mkdtempSync(path.join(app.getPath('temp'), 'youtab-full-uninstall-'))
     handoff = { directory, token: crypto.randomUUID() }
     // Share the Update broker: real PowerShell admission must complete before
@@ -12821,16 +12821,16 @@ async function runCommonWindowsFullUninstall() {
     // Full uninstall has no informational progress stream.
     child.stdout.resume()
     pendingCommonFullUninstall = child
-    const clearPending = () => { if (pendingCommonFullUninstall === child) pendingCommonFullUninstall = null }
+    const clearPending = () => { if (pendingCommonFullUninstall === child) {pendingCommonFullUninstall = null} }
     child.once('exit', clearPending)
     child.once('error', clearPending)
     await waitForUninstallReady(child, handoff)
     await waitForUninstallReady(child, handoff, 45000, 'stopped')
     const teardown = await releaseBackendLock(ACTIVE_YOUTAB_AGENT_ROOT, 'uninstall')
-    if (!teardown.unlocked) throw new Error('Youtab runtime files are still in use. Close other Youtab processes and retry.')
-    if (child.exitCode !== null || child.signalCode !== null) throw new Error('The uninstall helper exited before Desktop handoff.')
+    if (!teardown.unlocked) {throw new Error('Youtab runtime files are still in use. Close other Youtab processes and retry.')}
+    if (child.exitCode !== null || child.signalCode !== null) {throw new Error('The uninstall helper exited before Desktop handoff.')}
     await releaseWindowsMaintenanceHelper(child)
-    if (child.exitCode !== null || child.signalCode !== null) throw new Error('The uninstall helper exited during Desktop handoff.')
+    if (child.exitCode !== null || child.signalCode !== null) {throw new Error('The uninstall helper exited during Desktop handoff.')}
     child.stdout.destroy()
     child.unref()
   } catch (error) {

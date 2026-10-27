@@ -38,7 +38,7 @@ export function RuntimeNavigation() {
       </nav>
       <Dialog
         onOpenChange={open => {
-          if (!open) setNotice(null)
+          if (!open) {setNotice(null)}
         }}
         open={notice !== null}
       >

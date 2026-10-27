@@ -1,12 +1,12 @@
-import { createHash, generateKeyPairSync } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
+import { createHash, generateKeyPairSync } from 'node:crypto'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
-import { createRequire } from 'node:module'
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
 import { build } from 'esbuild'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // Installation/transaction fixtures are synthetic and never run an Installer.
 // The production launcher, native leases, PowerShell, pipes, ACKs and process
@@ -39,11 +39,11 @@ exit 0
 }))
 
 import { handoffInnoUpdate, type InnoUpdateHandoffHost } from './inno-update-handoff'
+import { INNO_UPDATE_INSTALLER_JOB_FUNCTIONS } from './inno-update-installer-job'
 import { type AuthenticatedInnoRelease, INNO_UPDATE_FEED, validateInnoUpdateTrustRoot } from './inno-update-release'
-import { releaseWindowsMaintenanceHelper, spawnWindowsMaintenanceHelper } from './windows-maintenance-helper'
 import type { SetupLease } from './setup-native-lease'
 import { cancelUninstallHelper } from './windows-full-uninstall'
-import { INNO_UPDATE_INSTALLER_JOB_FUNCTIONS } from './inno-update-installer-job'
+import { releaseWindowsMaintenanceHelper, spawnWindowsMaintenanceHelper } from './windows-maintenance-helper'
 
 const nativeLeasePath=path.resolve('build/native/setup_lease.node')
 function expectProcessExited(pid:number):void {
@@ -225,7 +225,7 @@ Start-Sleep -Seconds 3
       child=spawnWindowsMaintenanceHelper({installRoot:f.host.installation.installRoot,handoffDirectory:directory,
         script:'exit 17',acquireLease:acquireRuntimeLease})
     } finally {
-      for(const key of Object.keys(process.env))if(key.toUpperCase()==='NODE_OPTIONS')delete process.env[key]
+      for(const key of Object.keys(process.env)){if(key.toUpperCase()==='NODE_OPTIONS'){delete process.env[key]}}
       Object.assign(process.env,prior)
     }
     const code=await new Promise<number|null>((resolve,reject)=>{child.once('error',reject);child.once('close',resolve)})

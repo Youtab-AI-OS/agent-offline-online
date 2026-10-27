@@ -44,6 +44,6 @@ describe('custom endpoint requests target the selected gateway profile', () => {
       '/api/providers/custom-endpoints/local%2Ftest/activate',
       '/api/providers/custom-endpoints/local%2Ftest'
     ])
-    for (const [request] of api.mock.calls) expect(request.profile).toBe('synthetic-local-profile')
+    for (const [request] of api.mock.calls) {expect(request.profile).toBe('synthetic-local-profile')}
   })
 })

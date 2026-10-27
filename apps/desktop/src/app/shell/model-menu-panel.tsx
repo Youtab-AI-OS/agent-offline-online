@@ -1,15 +1,13 @@
-import { SimorghOrb as RuntimeMenuBrand } from '@/components/ui/simorgh-orb'
-import {
-  IconRefresh as RuntimeRefreshIcon,
-  IconAdjustmentsHorizontal as RuntimeEditIcon,
-  IconCheck as RuntimeCheckIcon
-} from '@tabler/icons-react'
 import { useStore } from '@nanostores/react'
+import {
+  IconCheck as RuntimeCheckIcon,
+  IconAdjustmentsHorizontal as RuntimeEditIcon,
+  IconRefresh as RuntimeRefreshIcon
+} from '@tabler/icons-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
-import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import {
   DropdownMenuGroup,
@@ -24,6 +22,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { usePointerQuiet } from '@/components/ui/keyboard-first'
+import { SimorghOrb as RuntimeMenuBrand } from '@/components/ui/simorgh-orb'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'

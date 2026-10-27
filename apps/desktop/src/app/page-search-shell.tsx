@@ -1,7 +1,6 @@
-import { Backdrop } from '@/components/Backdrop'
-
 import type { ReactNode } from 'react'
 
+import { Backdrop } from '@/components/Backdrop'
 import { SearchField } from '@/components/ui/search-field'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { cn } from '@/lib/utils'
@@ -74,8 +73,8 @@ export function PageSearchShell({
   return (
     <section
       {...props}
-      data-slot="application-page"
       className={cn('flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)', className)}
+      data-slot="application-page"
     >
       <Backdrop />
       {/*

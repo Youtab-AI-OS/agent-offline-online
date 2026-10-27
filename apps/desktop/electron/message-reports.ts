@@ -7,6 +7,14 @@ import { createHash } from 'node:crypto'
 export const PERSONAL_REPORT_ORIGIN = 'https://api.youtab.io'
 export const DESKTOP_REPORT_SUBJECT = '[Desktop report]'
 
+function hasUnsafeOrganizationUrlCharacter(value: string): boolean {
+  return Array.from(value).some(character => {
+    const code = character.charCodeAt(0)
+
+    return character === '\\' || /\s/.test(character) || code <= 31 || code === 127
+  })
+}
+
 export interface MessageReportInput {
   messageId: string
   reason: string
@@ -14,8 +22,8 @@ export interface MessageReportInput {
 }
 
 export function normalizeOrganizationAdminUrl(raw: unknown): string {
-  if (raw === '') return ''
-  if (typeof raw !== 'string' || raw.length > 2048 || /[\s\\\x00-\x1f\x7f]/.test(raw)) {
+  if (raw === '') {return ''}
+  if (typeof raw !== 'string' || raw.length > 2048 || hasUnsafeOrganizationUrlCharacter(raw)) {
     throw new Error('INVALID_ORGANIZATION_ADMIN_URL')
   }
   const url = new URL(raw)
@@ -26,7 +34,7 @@ export function normalizeOrganizationAdminUrl(raw: unknown): string {
 }
 
 export function validateMessageReport(raw: unknown): MessageReportInput {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('INVALID_MESSAGE_REPORT')
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {throw new Error('INVALID_MESSAGE_REPORT')}
   const input = raw as Record<string, unknown>
   if (Object.keys(input).some(key => !['messageId', 'reason', 'excerpt'].includes(key))) {
     throw new Error('INVALID_MESSAGE_REPORT_FIELD')
@@ -65,14 +73,14 @@ export function createMessageReporter(deps: {
   return async (raw: unknown, expectedScope?: string) => {
     const report = validateMessageReport(raw)
     const context = await deps.context()
-    if (context.organization) throw new Error('ORGANIZATION_REPORTING_NOT_INTEGRATED')
-    if (expectedScope !== undefined && expectedScope !== reportScopeKey(context)) throw new Error('REPORT_SCOPE_CHANGED')
+    if (context.organization) {throw new Error('ORGANIZATION_REPORTING_NOT_INTEGRATED')}
+    if (expectedScope !== undefined && expectedScope !== reportScopeKey(context)) {throw new Error('REPORT_SCOPE_CHANGED')}
     const checkScope = async () => {
       const current = await deps.context()
-      if (current.organization || reportScopeKey(current) !== reportScopeKey(context)) throw new Error('REPORT_SCOPE_CHANGED')
+      if (current.organization || reportScopeKey(current) !== reportScopeKey(context)) {throw new Error('REPORT_SCOPE_CHANGED')}
     }
     const token = await deps.token(context.profile)
-    if (!token) throw new Error('REPORT_SIGN_IN_REQUIRED')
+    if (!token) {throw new Error('REPORT_SIGN_IN_REQUIRED')}
     await checkScope()
     const response = await deps.request(`${PERSONAL_REPORT_ORIGIN}/v1/support/tickets`, {
       method: 'POST',
@@ -103,23 +111,23 @@ export function createMessageReporter(deps: {
       typeof result.ticket_id !== 'string' ||
       !/^[a-zA-Z0-9_-]{1,128}$/.test(result.ticket_id)
     )
-      throw new Error('REPORT_RECEIPT_INVALID')
+      {throw new Error('REPORT_RECEIPT_INVALID')}
     await checkScope()
     return { reportId: result.ticket_id }
   }
 }
 
 async function readLimitedResponse(response: Response) {
-  if (!response.body) throw new Error('REPORT_RECEIPT_EMPTY')
+  if (!response.body) {throw new Error('REPORT_RECEIPT_EMPTY')}
   const reader = response.body.getReader()
   const chunks: Uint8Array[] = []
   let size = 0
   try {
     for (;;) {
       const next = await reader.read()
-      if (next.done) break
+      if (next.done) {break}
       size += next.value.byteLength
-      if (size > 65536) throw new Error('REPORT_RECEIPT_TOO_LARGE')
+      if (size > 65536) {throw new Error('REPORT_RECEIPT_TOO_LARGE')}
       chunks.push(next.value)
     }
   } finally {

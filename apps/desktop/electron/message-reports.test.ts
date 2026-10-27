@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+
 import {
   createMessageReporter,
   normalizeOrganizationAdminUrl,
@@ -113,6 +114,6 @@ describe('Organization Admin navigation address', () => {
       'https://org.invalid/\nadmin',
       'https://org.invalid\\other'
     ])
-      expect(() => normalizeOrganizationAdminUrl(url)).toThrow()
+      {expect(() => normalizeOrganizationAdminUrl(url)).toThrow()}
   })
 })

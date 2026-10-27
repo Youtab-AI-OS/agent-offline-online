@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
 import { UninstallSection } from './uninstall-section'
 
 afterEach(() => {
@@ -11,8 +12,8 @@ describe('Uninstall disclosure', () => {
   it.each(['denied', 'rejected'] as const)('keeps the start failure visible after %s and requires confirmation before retry', async failure => {
     const message = failure === 'denied' ? 'Registered uninstall location does not match this installation.' : 'Uninstall helper could not start.'
     const run = vi.fn()
-    if (failure === 'denied') run.mockResolvedValue({ ok: false, error: 'full-uninstall-not-started', message })
-    else run.mockRejectedValue(new Error(message))
+    if (failure === 'denied') {run.mockResolvedValue({ ok: false, error: 'full-uninstall-not-started', message })}
+    else {run.mockRejectedValue(new Error(message))}
     Object.assign(window, {
       youtabDesktop: {
         uninstall: {

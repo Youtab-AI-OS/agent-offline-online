@@ -1,14 +1,13 @@
-import type { IconComponent } from '@/lib/icons'
+import { useStore } from '@nanostores/react'
 import {
+  IconBrain,
   IconCube,
-  IconMessageCircle,
   IconDeviceDesktop,
   IconLock,
-  IconBrain,
+  IconMessageCircle,
   IconMicrophone,
   IconTool
 } from '@tabler/icons-react'
-import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type { ChangeEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -18,6 +17,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import type { IconComponent } from '@/lib/icons'
 import {
   $dataUrlReadMaxMb,
   clampDataUrlReadMaxMb,

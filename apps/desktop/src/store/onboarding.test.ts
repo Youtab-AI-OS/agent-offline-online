@@ -758,7 +758,7 @@ describe('saveOnboardingLocalEndpoint', () => {
       if (path === '/api/providers/validate') {
         return { ok: true, reachable: true, message: '', models: ['local-qwen'], base_url: 'http://127.0.0.1:11434/v1' }
       }
-      if (path === '/api/model/set') return { ok: true }
+      if (path === '/api/model/set') {return { ok: true }}
       throw new Error('unexpected api path: ' + path)
     })
     const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:11434', '', {

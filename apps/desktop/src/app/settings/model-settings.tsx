@@ -1,13 +1,12 @@
-import type { IconComponent } from '@/lib/icons'
 import {
+  IconDatabase,
   IconEye,
   IconFileDescription,
-  IconDatabase,
+  IconHierarchy2,
   IconLayoutGrid,
   IconShieldCheck,
-  IconHierarchy2,
-  IconTypography,
-  IconSparkles
+  IconSparkles,
+  IconTypography
 } from '@tabler/icons-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -17,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
+import type { IconComponent } from '@/lib/icons'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'

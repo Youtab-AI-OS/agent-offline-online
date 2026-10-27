@@ -33,29 +33,29 @@ export function MessageReportButton({
   const [receipt, setReceipt] = useState('')
   const inFlight = useRef(false)
   useEffect(() => {
-    if (!open) return
+    if (!open) {return}
     let live = true
     setDestination(null)
     void window.youtabDesktop?.messageReports
       ?.status()
       .then(state => {
-        if (live) setDestination(state)
+        if (live) {setDestination(state)}
       })
       .catch(() => {
-        if (live) setError(true)
+        if (live) {setError(true)}
       })
     return () => {
       live = false
     }
   }, [open])
   const submit = async () => {
-    if (inFlight.current || !reason.trim() || !destination?.available) return
+    if (inFlight.current || !reason.trim() || !destination?.available) {return}
     inFlight.current = true
     setBusy(true)
     setError(false)
     try {
       const bridge = window.youtabDesktop?.messageReports
-      if (!bridge) throw new Error('REPORT_UNAVAILABLE')
+      if (!bridge) {throw new Error('REPORT_UNAVAILABLE')}
       const result = await bridge.submit({ messageId, reason, ...(includeExcerpt ? { excerpt } : {}) }, destination.scope)
       setReceipt(result.reportId)
     } catch {
@@ -68,7 +68,6 @@ export function MessageReportButton({
   return (
     <>
       <TooltipIconButton
-        tooltip={copy.report}
         onClick={() => {
           setReason('')
           setReceipt('')
@@ -77,14 +76,15 @@ export function MessageReportButton({
           setExcerpt(getMessageText().slice(0, 8000))
           setOpen(true)
         }}
+        tooltip={copy.report}
       >
         <IconFlag className="size-3.5" />
       </TooltipIconButton>
       <Dialog
-        open={open}
         onOpenChange={value => {
-          if (!inFlight.current) setOpen(value)
+          if (!inFlight.current) {setOpen(value)}
         }}
+        open={open}
       >
         <DialogContent>
           <DialogHeader>
@@ -106,18 +106,18 @@ export function MessageReportButton({
               <label className="grid gap-2">
                 <span>{copy.reason}</span>
                 <Textarea
-                  value={reason}
-                  maxLength={4000}
                   disabled={busy}
+                  maxLength={4000}
                   onChange={event => setReason(event.target.value)}
+                  value={reason}
                 />
               </label>
               <label className="flex items-center gap-2">
                 <input
-                  type="checkbox"
                   checked={includeExcerpt}
                   disabled={busy}
                   onChange={event => setIncludeExcerpt(event.target.checked)}
+                  type="checkbox"
                 />
                 {copy.includeExcerpt}
               </label>
@@ -125,10 +125,10 @@ export function MessageReportButton({
                 <label className="grid gap-2">
                   <span>{copy.excerptLimit}</span>
                   <Textarea
-                    value={excerpt}
-                    maxLength={8000}
                     disabled={busy}
+                    maxLength={8000}
                     onChange={event => setExcerpt(event.target.value)}
+                    value={excerpt}
                   />
                 </label>
               )}
@@ -136,7 +136,7 @@ export function MessageReportButton({
             </div>
           )}
           <DialogFooter>
-            <Button variant="ghost" disabled={busy} onClick={() => setOpen(false)}>
+            <Button disabled={busy} onClick={() => setOpen(false)} variant="ghost">
               {t.common.close}
             </Button>
             {!receipt && (

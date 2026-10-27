@@ -1,34 +1,34 @@
-import { useI18n } from '@/i18n'
 import {
-  IconCube,
-  IconMessageCircle,
-  IconPalette,
-  IconDeviceDesktop,
-  IconLock,
-  IconBrain,
-  IconMicrophone,
-  IconTool,
-  IconBell,
-  IconChartBar,
-  IconBolt,
-  IconUserCircle,
-  IconKey,
-  IconLink,
-  IconServer2,
-  IconKeyboard,
-  IconTools,
-  IconSettings,
   IconArchive,
-  IconInfoCircle,
+  IconBell,
+  IconBolt,
+  IconBrain,
+  IconChartBar,
   IconChevronDown,
   IconChevronUp,
   IconCode,
+  IconCube,
+  IconDeviceDesktop,
   IconGitPullRequest,
-  IconLayoutGrid
+  IconInfoCircle,
+  IconKey,
+  IconKeyboard,
+  IconLayoutGrid,
+  IconLink,
+  IconLock,
+  IconMessageCircle,
+  IconMicrophone,
+  IconPalette,
+  IconServer2,
+  IconSettings,
+  IconTool,
+  IconTools,
+  IconUserCircle
 } from '@tabler/icons-react'
 import { Fragment, memo, type ReactNode } from 'react'
 
 import { TabDropdown } from '@/components/ui/tab-dropdown'
+import { useI18n } from '@/i18n'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -70,7 +70,6 @@ interface OverlayNavItemProps {
 export function OverlaySplitLayout({ children, className }: OverlaySplitLayoutProps) {
   return (
     <div
-      data-slot="overlay-split"
       className={cn(
         // Narrow: one column, and pin rows to [nav-bar auto | main 1fr] — without
         // an explicit template the grid's default align-content:stretch splits the
@@ -78,6 +77,7 @@ export function OverlaySplitLayout({ children, className }: OverlaySplitLayoutPr
         'grid h-full min-h-0 flex-1 grid-cols-[13rem_minmax(0,1fr)] overflow-hidden bg-transparent max-[47.5rem]:grid-cols-1 max-[47.5rem]:grid-rows-[auto_minmax(0,1fr)]',
         className
       )}
+      data-slot="overlay-split"
     >
       {children}
     </div>
@@ -87,7 +87,6 @@ export function OverlaySplitLayout({ children, className }: OverlaySplitLayoutPr
 export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
   return (
     <aside
-      data-slot="overlay-sidebar"
       className={cn(
         // The left links sit beside (not under) the floating close button, so
         // they ride up via the shorter shared OVERLAY_TOP_CLEARANCE (same line
@@ -97,6 +96,7 @@ export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
         OVERLAY_TOP_CLEARANCE,
         className
       )}
+      data-slot="overlay-sidebar"
     >
       {children}
     </aside>
@@ -106,7 +106,6 @@ export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
 export function OverlayMain({ children, className }: OverlayMainProps) {
   return (
     <main
-      data-slot="overlay-main"
       className={cn(
         // Main sits UNDER the floating close button (top-right), so it keeps the
         // taller top pad to clear the X — unlike the sidebar / Panel header,
@@ -119,6 +118,7 @@ export function OverlayMain({ children, className }: OverlayMainProps) {
         PAGE_MAX_W,
         className
       )}
+      data-slot="overlay-main"
     >
       {children}
     </main>
@@ -136,7 +136,6 @@ export const OverlayNavItem = memo(function OverlayNavItem({
   return (
     <button
       aria-current={active ? 'page' : undefined}
-      data-slot="overlay-nav-item"
       className={cn(
         'flex h-7 w-full items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
         nested
@@ -147,6 +146,7 @@ export const OverlayNavItem = memo(function OverlayNavItem({
             ? 'border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary) text-foreground'
             : 'border-transparent bg-transparent text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
       )}
+      data-slot="overlay-nav-item"
       onClick={onClick}
       type="button"
     >
@@ -229,7 +229,7 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
               </Fragment>
             )
           }
-          if (!isSettings) return groups.map(renderGroup)
+          if (!isSettings) {return groups.map(renderGroup)}
           const providers = groups.findIndex(group => group.id === 'providers')
           const application = groups.findIndex(group => group.id === 'developer')
           const enterprise = groups.findIndex(group => group.id === 'organization-admin')

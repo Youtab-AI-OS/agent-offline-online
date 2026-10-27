@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, expect, it } from 'vitest'
 
 import { en } from '@/i18n/en'
-import { $capture, endCapture, resetAllBindings, setBinding, $bindings } from '@/store/keybinds'
+import { $bindings, $capture, endCapture, resetAllBindings, setBinding } from '@/store/keybinds'
 
 import { KeybindSettings } from './keybind-settings'
 

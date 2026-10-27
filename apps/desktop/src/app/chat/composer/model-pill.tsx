@@ -1,5 +1,3 @@
-import { Loader as RuntimeSimorghLoader } from '@/components/ui/loader'
-import { SimorghOrb as RuntimeSimorghMark } from '@/components/ui/simorgh-orb'
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
@@ -8,6 +6,8 @@ import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { releaseTypingFocus } from '@/components/ui/keyboard-first'
+import { Loader as RuntimeSimorghLoader } from '@/components/ui/loader'
+import { SimorghOrb as RuntimeSimorghMark } from '@/components/ui/simorgh-orb'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
@@ -157,7 +157,7 @@ export function ModelPill({
           </Button>
         </DropdownMenuTrigger>
       </Tip>
-      <DropdownMenuContent data-model-selector="" align="end" className="w-64 p-0" side="top" sideOffset={8}>
+      <DropdownMenuContent align="end" className="w-64 p-0" data-model-selector="" side="top" sideOffset={8}>
         <ModelMenuCloseContext.Provider value={() => setMenuOpen(false)}>
           {model.modelMenuContent}
         </ModelMenuCloseContext.Provider>
