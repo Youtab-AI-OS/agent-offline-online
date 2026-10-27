@@ -77,7 +77,9 @@ function buildStars(axis: TimeAxis): Star[] {
       const jitter = (r() - 0.5) * slot * 0.9
       // Average of two uniforms → triangular peak at 0.5, pulling stars toward
       // the midline more often while still reaching the edges occasionally.
-      const vertical = (r() + r()) / 2
+      const verticalFirst = r()
+      const verticalSecond = r()
+      const vertical = (verticalFirst + verticalSecond) / 2
 
       stars.push({
         delay: r() * 3,

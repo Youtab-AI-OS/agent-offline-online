@@ -230,21 +230,16 @@ export function validateCoordinationSetup(identity, bytes, commit, releaseBaseUr
 }
 
 function readVerifiedSetupInput(file) {
-  const before = lstatSync(file, { bigint: true })
-
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n ||
-      before.size > 256n * 1024n * 1024n) {
-    throw new Error('common Setup must be a bounded single-link regular file')
-  }
-
   const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
 
   try {
     const opened = fstatSync(fd, { bigint: true })
+    const before = lstatSync(file, { bigint: true })
 
-    if (!opened.isFile() || opened.nlink !== 1n || opened.dev !== before.dev ||
-        opened.ino !== before.ino || opened.size !== before.size) {
-      throw new Error('common Setup changed before read')
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n ||
+        before.size > 256n * 1024n * 1024n || !opened.isFile() || opened.nlink !== 1n ||
+        opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) {
+      throw new Error('common Setup must be a bounded single-link regular file')
     }
 
     const bytes = Buffer.alloc(Number(opened.size) + 1)

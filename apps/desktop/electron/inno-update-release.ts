@@ -744,15 +744,13 @@ export async function admitOfflineInnoInstaller(
     const source = localPath(sourceFile)
 
     if (path.basename(source) !== 'Youtab-Setup.exe') {fail('offline-file-name')}
+    handle = await fs.open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
+    const opened = await handle.stat()
     await noLinks(source)
     const before = await fs.lstat(source)
 
     if (!before.isFile() || before.size !== release.payload.installer.size || before.size > INNO_INSTALLER_LIMIT)
       {fail('offline-file-size')}
-
-    handle = await fs.open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
-    const opened = await handle.stat()
-
     if (!sameFile(opened, before) || opened.size !== before.size) {fail('offline-source-changed')}
     const sourceHandle = handle
 

@@ -984,24 +984,22 @@ function looksBinary(buffer) {
 function previewFileMetadata(filePath, mimeType) {
   let byteSize = 0
   let binary = false
+  let fd
 
   try {
-    const stat = fs.statSync(filePath)
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0))
+    const stat = fs.fstatSync(fd)
     byteSize = stat.size
 
     if (!mimeType.startsWith('image/')) {
-      const fd = fs.openSync(filePath, 'r')
-
-      try {
-        const sample = Buffer.alloc(Math.min(byteSize, 4096))
-        const bytesRead = fs.readSync(fd, sample, 0, sample.length, 0)
-        binary = looksBinary(sample.subarray(0, bytesRead))
-      } finally {
-        fs.closeSync(fd)
-      }
+      const sample = Buffer.alloc(Math.min(byteSize, 4096))
+      const bytesRead = fs.readSync(fd, sample, 0, sample.length, 0)
+      binary = looksBinary(sample.subarray(0, bytesRead))
     }
   } catch {
     // Metadata is best-effort; the read handlers surface hard errors later.
+  } finally {
+    if (fd !== undefined) {fs.closeSync(fd)}
   }
 
   return {
@@ -2090,12 +2088,22 @@ function isYoutabSourceRoot(root) {
 // binary runtime by dropping a JSON file beside its code.
 function readActiveRuntimeContract() {
   const file = path.join(ACTIVE_YOUTAB_AGENT_ROOT, RUNTIME_DESKTOP_CONTRACT)
+  let descriptor
+
   try {
-    const metadata = fs.lstatSync(file)
-    if (!metadata.isFile() || metadata.size === 0 || metadata.size > 4096) {return null}
-    return parseRuntimeDesktopContract(fs.readFileSync(file), readBootstrapMarker())
+    descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0))
+    const metadata = fs.fstatSync(descriptor)
+    const named = fs.lstatSync(file)
+
+    if (!metadata.isFile() || !named.isFile() || named.isSymbolicLink() ||
+        named.dev !== metadata.dev || named.ino !== metadata.ino || named.size !== metadata.size ||
+        metadata.size === 0 || metadata.size > 4096) {return null}
+
+    return parseRuntimeDesktopContract(fs.readFileSync(descriptor), readBootstrapMarker())
   } catch {
     return null
+  } finally {
+    if (descriptor !== undefined) {fs.closeSync(descriptor)}
   }
 }
 
@@ -2465,20 +2473,19 @@ function assertInnoUpdatePath(file: string) {
 
 function readInnoUpdateBytes(file: string, limit: number, missing = false): Buffer | null {
   assertInnoUpdatePath(file)
-  let before: fs.Stats
+  let descriptor
 
-  try { before = fs.lstatSync(file) } catch (error) {
+  try { descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0)) } catch (error) {
     if (missing && error?.code === 'ENOENT') {return null}
     throw error
   }
 
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > limit) {throw new Error('Unsafe or oversized update metadata.')}
-  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
-
   try {
     const opened = fs.fstatSync(descriptor)
+    const before = fs.lstatSync(file)
 
-    if (opened.dev !== before.dev || opened.ino !== before.ino) {throw new Error('Update metadata changed while opening.')}
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > limit ||
+        opened.dev !== before.dev || opened.ino !== before.ino) {throw new Error('Unsafe or oversized update metadata.')}
     const bytes = Buffer.alloc(before.size + 1)
     let total = 0
 
@@ -3904,22 +3911,16 @@ function runningAppBundle() {
 // Python-level pre-update snapshot inside `youtab update`.
 function preflightStateDb(youtabHome, rememberLog) {
   const stateDbPath = path.join(youtabHome, 'state.db')
-
-  if (!fileExists(stateDbPath)) {
-    rememberLog('[updates] state.db pre-flight: not found (fresh install?)')
-
-    return
-  }
+  let fd
 
   try {
-    const stat = fs.statSync(stateDbPath)
+    fd = fs.openSync(stateDbPath, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0))
+    const stat = fs.fstatSync(fd)
 
     if (stat.size > 100) {
-      const fd = fs.openSync(stateDbPath, 'r')
       const header = Buffer.alloc(16)
 
       fs.readSync(fd, header, 0, 16, 0)
-      fs.closeSync(fd)
 
       const expectedHeader = Buffer.from('SQLite format 3\0')
       const headerOk = header.equals(expectedHeader)
@@ -3978,7 +3979,13 @@ function preflightStateDb(youtabHome, rememberLog) {
       rememberLog(`[updates] state.db too small (${stat.size} bytes) for a valid SQLite database`)
     }
   } catch (statErr) {
-    rememberLog(`[updates] could not stat state.db before update: ${statErr.message}`)
+    if (statErr?.code === 'ENOENT') {
+      rememberLog('[updates] state.db pre-flight: not found (fresh install?)')
+    } else {
+      rememberLog(`[updates] could not read state.db before update: ${statErr.message}`)
+    }
+  } finally {
+    if (fd !== undefined) {fs.closeSync(fd)}
   }
 }
 
@@ -6938,7 +6945,7 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     // loop-guard tripped, etc.) and the window is now showing an interactive
     // page. Reveal it so the user can complete sign-in manually rather than
     // staring at nothing. Cleared on finish().
-    if (silent && win) {
+    if (silent) {
       revealTimer = setTimeout(() => {
         try {
           if (!settled && win && !win.isDestroyed() && !win.isVisible()) {
@@ -7204,17 +7211,25 @@ function organizationAdminLinksPath() {
   return path.join(app.getPath('userData'), 'organization-admin-links-v1.json')
 }
 function readOrganizationAdminLinks(): Record<string, string> {
+  let descriptor
+
   try {
     const file = organizationAdminLinksPath()
-    const info = fs.lstatSync(file)
-    if (!info.isFile() || info.isSymbolicLink() || info.size > 65536) {throw new Error('INVALID_ORGANIZATION_LINK_STORE')}
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
+    descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0))
+    const info = fs.fstatSync(descriptor)
+    const named = fs.lstatSync(file)
+    if (!info.isFile() || !named.isFile() || named.isSymbolicLink() ||
+        named.dev !== info.dev || named.ino !== info.ino || named.size !== info.size || info.size > 65536)
+      {throw new Error('INVALID_ORGANIZATION_LINK_STORE')}
+    const parsed = JSON.parse(fs.readFileSync(descriptor, 'utf8'))
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
       {throw new Error('INVALID_ORGANIZATION_LINK_STORE')}
     return parsed
   } catch (error: any) {
     if (error.code === 'ENOENT') {return {}}
     throw error
+  } finally {
+    if (descriptor !== undefined) {fs.closeSync(descriptor)}
   }
 }
 function organizationAdminUrl(profile: string) {
@@ -8962,7 +8977,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
   // for local we fall back to the resolved/started backend.
   let baseUrl
   let token = null
-  let authMode = 'token'
+  let authMode
 
   if (wantRemote && block?.url) {
     baseUrl = normalizeRemoteBaseUrl(block.url)

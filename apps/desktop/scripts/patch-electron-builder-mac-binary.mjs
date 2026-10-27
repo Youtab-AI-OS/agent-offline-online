@@ -44,21 +44,30 @@ const replacement = `    // ${marker}: electron-builder 26.8.x can sometimes cop
         (0, builder_util_1.unlinkIfExists)(path.join(appOutDir, "LICENSES.chromium.html")),
     ]);`
 
-if (!fs.existsSync(electronMacPath)) {
+let descriptor
+
+try {
+  descriptor = fs.openSync(electronMacPath, 'r+')
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error
   console.warn(`[patch-electron-builder] skipped: ${electronMacPath} not found`)
-  process.exit(0)
 }
 
-const source = fs.readFileSync(electronMacPath, 'utf8')
-if (source.includes(marker)) {
-  console.log('[patch-electron-builder] macOS Electron binary fallback already applied')
-  process.exit(0)
-}
+if (descriptor !== undefined) {
+  try {
+    const source = fs.readFileSync(descriptor, 'utf8')
 
-if (!source.includes(needle)) {
-  console.warn('[patch-electron-builder] skipped: expected electronMac.js shape not found')
-  process.exit(0)
+    if (source.includes(marker)) {
+      console.log('[patch-electron-builder] macOS Electron binary fallback already applied')
+    } else if (!source.includes(needle)) {
+      console.warn('[patch-electron-builder] skipped: expected electronMac.js shape not found')
+    } else {
+      const patched = source.replace(needle, replacement)
+      fs.ftruncateSync(descriptor, 0)
+      fs.writeSync(descriptor, patched, 0, 'utf8')
+      console.log('[patch-electron-builder] applied macOS Electron binary fallback')
+    }
+  } finally {
+    fs.closeSync(descriptor)
+  }
 }
-
-fs.writeFileSync(electronMacPath, source.replace(needle, replacement))
-console.log('[patch-electron-builder] applied macOS Electron binary fallback')

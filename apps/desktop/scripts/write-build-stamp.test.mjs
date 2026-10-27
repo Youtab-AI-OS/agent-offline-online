@@ -277,7 +277,8 @@ test('pack entry point copies the same validated Setup resource and clears it fo
     assert.equal(local.status, 0, local.stderr)
     assert.equal(existsSync(resource), false)
     assert.equal(JSON.parse(readFileSync(stampFile, 'utf8')).updateCoordination, undefined)
-    assert.equal(JSON.parse(readFileSync(stampFile, 'utf8')).setupLease, undefined)
+    assert.deepEqual(JSON.parse(readFileSync(stampFile, 'utf8')).setupLease,
+      process.platform === 'win32' ? validateSetupLeaseAddon(addon) : undefined)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -321,6 +322,10 @@ test('explicit development stamp entry creates the same verified resource with d
     const entry = join(desktop, 'scripts/write-build-stamp.mjs')
     copyFileSync(fileURLToPath(new URL('./write-build-stamp.mjs', import.meta.url)), entry)
     copyFileSync(fileURLToPath(new URL('./utils.mjs', import.meta.url)), join(desktop, 'scripts/utils.mjs'))
+    if (process.platform === 'win32') {
+      mkdirSync(join(desktop, 'build/native'), { recursive: true })
+      writeFileSync(join(desktop, 'build/native/setup_lease.node'), leaseAddonFixture())
+    }
     const path = join(dir, 'same-common-setup.exe'); writeFileSync(path, image)
     const env = { ...process.env }
     for (const key of ['GITHUB_SHA', 'GITHUB_REF_NAME', 'GITHUB_HEAD_REF', 'YOUTAB_AGENT_CUSTOMER_BUILD']) delete env[key]

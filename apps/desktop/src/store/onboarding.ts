@@ -878,7 +878,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
 
   // Persist the same endpoint that successfully advertised the model.
   let model = ''
-  let resolvedUrl = url
+  let resolvedUrl: string
 
   try {
     const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key)

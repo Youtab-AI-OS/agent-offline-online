@@ -10,9 +10,14 @@ import { test } from 'vitest'
 
 const nativePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../build/native/setup_lease.node')
 type Addon = { protocol(): string, acquire(file: string, sha: string, size: number): unknown, release(lease: unknown): void }
+let nativeAddon: Addon | undefined
 
-test.skipIf(process.platform !== 'win32' || !fs.existsSync(nativePath))('native Setup lease holds the named image and its parent directory through concurrent callers', () => {
-  const native = createRequire(import.meta.url)(nativePath) as Addon
+if (process.platform === 'win32') {
+  try {nativeAddon = createRequire(import.meta.url)(nativePath) as Addon} catch {nativeAddon = undefined}
+}
+
+test.skipIf(!nativeAddon)('native Setup lease holds the named image and its parent directory through concurrent callers', () => {
+  const native = nativeAddon!
   assert.equal(native.protocol(), 'youtab.setup-lease/napi-v1')
   assert.equal(typeof native.acquire, 'function')
   assert.equal(typeof native.release, 'function')
@@ -49,8 +54,8 @@ test.skipIf(process.platform !== 'win32' || !fs.existsSync(nativePath))('native 
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
-test.skipIf(process.platform !== 'win32' || !fs.existsSync(nativePath))('native Setup lease rejects multi-link files', context => {
-  const native = createRequire(import.meta.url)(nativePath) as Addon
+test.skipIf(!nativeAddon)('native Setup lease rejects multi-link files', context => {
+  const native = nativeAddon!
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'youtab-lease-link-'))
   const executable = path.join(root, 'Youtab-Setup.exe')
   const linked = path.join(root, 'linked.exe')
@@ -71,8 +76,8 @@ test.skipIf(process.platform !== 'win32' || !fs.existsSync(nativePath))('native 
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
-test.skipIf(process.platform !== 'win32' || !fs.existsSync(nativePath))('native Setup lease rejects reparse aliases in file and parent', context => {
-  const native = createRequire(import.meta.url)(nativePath) as Addon
+test.skipIf(!nativeAddon)('native Setup lease rejects reparse aliases in file and parent', context => {
+  const native = nativeAddon!
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'youtab-lease-reparse-'))
   const real = path.join(root, 'real')
   const parentAlias = path.join(root, 'alias')

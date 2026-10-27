@@ -1,13 +1,10 @@
 #!/usr/bin/env node
 import { logLine } from './log-framing.mjs'
-const diagnosticLog = (...args) => console.log(logLine(...args))
-const diagnosticError = (...args) => console.error(logLine(...args))
+const diagnosticLog = (...args) => console.log(logLine(...args).replace(/[\r\n]/g, ''))
+const diagnosticError = (...args) => console.error(logLine(...args).replace(/[\r\n]/g, ''))
 // CDP probe: measure render churn on overlay surfaces (cmdk, settings, command-center, skills)
 // against the user's live instance on :9222. Read-only — never closes or navigates away.
 import WebSocket from 'ws'
-
-const CDP_URL = 'ws://127.0.0.1:9222'
-const TARGET_GLOB = '/devtools/page/'
 
 let msgId = 1
 

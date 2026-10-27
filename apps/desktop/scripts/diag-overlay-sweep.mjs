@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { logLine } from './log-framing.mjs'
-const diagnosticLog = (...args) => console.log(logLine(...args))
-const diagnosticError = (...args) => console.error(logLine(...args))
+const diagnosticLog = (...args) => console.log(logLine(...args).replace(/[\r\n]/g, ''))
+const diagnosticError = (...args) => console.error(logLine(...args).replace(/[\r\n]/g, ''))
 // Full surface sweep: every overlay, every settings sub-page, every system overlay.
 // Read-only — navigates and clicks, never closes the app.
 import WebSocket from 'ws'
@@ -59,7 +59,7 @@ async function main() {
   const ws = new WebSocket(WS_URL)
   await new Promise((res, rej) => { ws.on('open', res); ws.on('error', rej) })
   await send(ws, 'Runtime.enable')
-  if (await eval_(ws, `typeof __RENDER_COUNTS__`) !== 'object') { diagnosticError('counter not loaded'); process.exit(1) }
+  if (await eval_(ws, `typeof __RENDER_COUNTS__`) !== 'object') { throw new Error('counter not loaded') }
 
   const results = []
 

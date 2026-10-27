@@ -18,7 +18,6 @@ const installation: CommonWindowsUninstallInput = {
   appData: 'C:\\Users\\Tester\\AppData\\Roaming', userProfile: 'C:\\Users\\Tester', windowsDirectory: 'C:\\Windows', desktopPid: 123
 }
 const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-const encoded = (value: string) => Buffer.from(value, 'utf16le').toString('base64')
 const runPowerShell = (script: string) => execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', '-'], {input:powershellInlineInput(script),encoding:'utf8', windowsHide:true, timeout:10000})
 
 describe('common Windows full-uninstall scope', () => {

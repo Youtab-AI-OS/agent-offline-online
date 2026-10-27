@@ -15,13 +15,16 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
   chmodSync,
+  closeSync,
   cpSync,
   existsSync,
+  ftruncateSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
-  writeFileSync
+  writeSync
 } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { isMain } from './utils.mjs'
@@ -36,21 +39,33 @@ function makeExecutable(filePath) {
 
 function patchUnixTerminalAsarPaths(destRoot) {
   const filePath = join(destRoot, 'lib', 'unixTerminal.js')
-  if (!existsSync(filePath)) return
+  let descriptor
 
-  const source = readFileSync(filePath, 'utf8')
-  const patched = source
-    .replace(
-      "helperPath = helperPath.replace('app.asar', 'app.asar.unpacked');",
-      "helperPath = helperPath.replace(/app\\.asar(?!\\.unpacked)/, 'app.asar.unpacked');"
-    )
-    .replace(
-      "helperPath = helperPath.replace('node_modules.asar', 'node_modules.asar.unpacked');",
-      "helperPath = helperPath.replace(/node_modules\\.asar(?!\\.unpacked)/, 'node_modules.asar.unpacked');"
-    )
+  try {
+    descriptor = openSync(filePath, 'r+')
+  } catch (error) {
+    if (error.code === 'ENOENT') return
+    throw error
+  }
 
-  if (patched !== source) {
-    writeFileSync(filePath, patched)
+  try {
+    const source = readFileSync(descriptor, 'utf8')
+    const patched = source
+      .replace(
+        "helperPath = helperPath.replace('app.asar', 'app.asar.unpacked');",
+        "helperPath = helperPath.replace(/app\\.asar(?!\\.unpacked)/, 'app.asar.unpacked');"
+      )
+      .replace(
+        "helperPath = helperPath.replace('node_modules.asar', 'node_modules.asar.unpacked');",
+        "helperPath = helperPath.replace(/node_modules\\.asar(?!\\.unpacked)/, 'node_modules.asar.unpacked');"
+      )
+
+    if (patched !== source) {
+      ftruncateSync(descriptor, 0)
+      writeSync(descriptor, patched, 0, 'utf8')
+    }
+  } finally {
+    closeSync(descriptor)
   }
 }
 

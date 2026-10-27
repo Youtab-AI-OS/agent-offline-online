@@ -178,28 +178,27 @@ export async function createProjectWorkingCopy(
       const target = path.join(workingPath, entry.relative)
       await checkedDirectory(path.dirname(original))
       await checkedDirectory(path.dirname(target))
-      const stat = await fs.lstat(original)
+      const input = await fs.open(original, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0))
 
-      if (
-        !stat.isFile() ||
-        stat.isSymbolicLink() ||
-        stat.dev !== entry.dev ||
-        stat.ino !== entry.ino ||
-        stat.size !== entry.size ||
-        stat.mtimeMs !== entry.mtimeMs
-      ) {
-        throw new Error(
-          `A source file changed during copying. Close other editors and try a new project name: ${original}`
-        )
-      }
-
-      const input = await fs.open(original, constants.O_RDONLY | (constants.O_NOFOLLOW || 0))
 
       try {
         const opened = await input.stat()
+        const stat = await fs.lstat(original)
 
-        if (opened.dev !== stat.dev || opened.ino !== stat.ino || opened.size !== stat.size) {
-          throw new Error(`The source file changed during copying: ${original}`)
+        if (
+          !stat.isFile() ||
+          stat.isSymbolicLink() ||
+          stat.dev !== entry.dev ||
+          stat.ino !== entry.ino ||
+          stat.size !== entry.size ||
+          stat.mtimeMs !== entry.mtimeMs ||
+          opened.dev !== stat.dev ||
+          opened.ino !== stat.ino ||
+          opened.size !== stat.size
+        ) {
+          throw new Error(
+            `A source file changed during copying. Close other editors and try a new project name: ${original}`
+          )
         }
 
         const output = await fs.open(

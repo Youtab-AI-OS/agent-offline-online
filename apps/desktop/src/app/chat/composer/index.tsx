@@ -213,7 +213,6 @@ export function ChatBar({
     isSteerableText,
     loadIntoComposer,
     requestMainFocus,
-    sessionIdRef,
     setComposerText,
     stashAt,
     syncDraftFromEditor
@@ -311,7 +310,7 @@ export function ChatBar({
 
   // The submit engine — the orchestration seam where draft + queue meet. Owns
   // the submit decision tree, the send-with-restore primitive, and steer.
-  const { queueDraft, steerDraft, submitDraft } = useComposerSubmit({
+  const { queueDraft, submitDraft } = useComposerSubmit({
     activeQueueSessionKey,
     activeQueueSessionKeyRef,
     attachments,

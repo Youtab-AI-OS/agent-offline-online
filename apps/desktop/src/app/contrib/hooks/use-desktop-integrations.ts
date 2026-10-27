@@ -160,7 +160,7 @@ export function useDesktopIntegrations({
 
       const slots = Object.entries(payload.params || {})
         .map(([k, v]) => {
-          const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+          const sval = /\s/.test(v) ? `"${v.replace(/[\\"]/g, '\\$&')}"` : v
 
           return `${k}=${sval}`
         })

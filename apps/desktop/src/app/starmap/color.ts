@@ -21,7 +21,9 @@ export function resolveRgb(color: string): Rgb {
 
   _probe.clearRect(0, 0, 1, 1)
   _probe.fillStyle = '#888888'
-  _probe.fillStyle = color
+  if (color.trim()) {
+    _probe.fillStyle = color
+  }
   _probe.fillRect(0, 0, 1, 1)
   const d = _probe.getImageData(0, 0, 1, 1).data
 

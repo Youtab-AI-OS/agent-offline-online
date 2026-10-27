@@ -73,28 +73,36 @@ function safeDirectory(directory: string, create: boolean): void {
 
 function readDocument(target: string): { document: Record<string, unknown>; text: string | null } {
   safeDirectory(path.dirname(target), false)
-  let stat: fs.Stats
+  let descriptor: number | undefined
 
   try {
-    stat = fs.lstatSync(target)
+    descriptor = fs.openSync(target, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0))
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {return { document: {}, text: null }}
     throw error
   }
 
-  if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_CONFIG_BYTES)
-    {throw new Error('Update preferences are not a bounded regular file.')}
+  try {
+    const stat = fs.fstatSync(descriptor)
+    const named = fs.lstatSync(target)
 
-  const bytes = fs.readFileSync(target)
+    if (!stat.isFile() || !named.isFile() || named.isSymbolicLink() ||
+        named.dev !== stat.dev || named.ino !== stat.ino || named.size !== stat.size || stat.size > MAX_CONFIG_BYTES)
+      {throw new Error('Update preferences are not a bounded regular file.')}
 
-  if (bytes.length > MAX_CONFIG_BYTES) {throw new Error('Update preferences exceed their size limit.')}
-  const text = bytes.toString('utf8')
-  const parsed: unknown = JSON.parse(text)
+    const bytes = fs.readFileSync(descriptor)
 
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-    {throw new Error('Invalid update preference document.')}
+    if (bytes.length > MAX_CONFIG_BYTES) {throw new Error('Update preferences exceed their size limit.')}
+    const text = bytes.toString('utf8')
+    const parsed: unknown = JSON.parse(text)
 
-  return { document: parsed as Record<string, unknown>, text }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+      {throw new Error('Invalid update preference document.')}
+
+    return { document: parsed as Record<string, unknown>, text }
+  } finally {
+    fs.closeSync(descriptor)
+  }
 }
 
 export function readDesktopUpdatePolicy(configPath: string): DesktopUpdatePolicyValue {
@@ -121,29 +129,32 @@ export function writeDesktopUpdatePolicy(configPath: string, value: unknown): De
   let cleanupFailure: unknown
 
   try {
-    descriptor = fs.openSync(temporary, 'wx', 0o600)
+    descriptor = fs.openSync(temporary, 'wx+', 0o600)
     const identity = fs.fstatSync(descriptor)
     fs.writeFileSync(descriptor, content, 'utf8')
     fs.fsyncSync(descriptor)
-    fs.closeSync(descriptor)
-    descriptor = undefined
     safeDirectory(path.dirname(target), false)
 
     if (readDocument(target).text !== before.text)
       {throw new Error('Update preferences changed while saving. Try again.')}
 
     const staged = fs.lstatSync(temporary)
+    const stagedBytes = Buffer.alloc(Buffer.byteLength(content))
+    const stagedLength = fs.readSync(descriptor, stagedBytes, 0, stagedBytes.length, 0)
 
     if (
       !staged.isFile() ||
       staged.isSymbolicLink() ||
       staged.dev !== identity.dev ||
       staged.ino !== identity.ino ||
-      fs.readFileSync(temporary, 'utf8') !== content
+      stagedLength !== stagedBytes.length ||
+      stagedBytes.toString('utf8') !== content
     ) {
       throw new Error('Staged update preferences changed while saving.')
     }
 
+    fs.closeSync(descriptor)
+    descriptor = undefined
     fs.renameSync(temporary, target)
   } finally {
     if (descriptor !== undefined) {

@@ -125,10 +125,7 @@ export function spawnWindowsMaintenanceHelper(input: WindowsMaintenanceHelperInp
     }
   }
   const source = path.join(input.installRoot, 'node', 'node.exe')
-  noReparseAncestors(source)
   noReparseAncestors(input.handoffDirectory)
-  const sourceMetadata = fs.lstatSync(source)
-  if (!sourceMetadata.isFile() || sourceMetadata.size < 1024) { throw new Error('The bundled maintenance runtime is unavailable.') }
 
   // Keep this separate: full uninstall owns and removes the signal directory.
   const directory = fs.mkdtempSync(path.join(path.dirname(input.handoffDirectory), 'youtab-maintenance-runtime-'))
@@ -151,12 +148,15 @@ export function spawnWindowsMaintenanceHelper(input: WindowsMaintenanceHelperInp
   try {
     sourceFd = fs.openSync(source, 'r')
     const opened = fs.fstatSync(sourceFd)
-    if (!opened.isFile() || opened.dev !== sourceMetadata.dev || opened.ino !== sourceMetadata.ino || opened.size !== sourceMetadata.size) {
-      throw new Error('The bundled maintenance runtime changed before admission.')
+    noReparseAncestors(source)
+    const namedSource = fs.lstatSync(source)
+    if (!opened.isFile() || opened.size < 1024 || !namedSource.isFile() || namedSource.isSymbolicLink()
+      || opened.dev !== namedSource.dev || opened.ino !== namedSource.ino || opened.size !== namedSource.size) {
+      throw new Error('The bundled maintenance runtime is unavailable.')
     }
     const sourceDigest=hashFile(sourceFd)
     sourceLease=input.acquireLease(source,sourceDigest,opened.size)
-    targetFd = fs.openSync(executable, 'wx', 0o700)
+    targetFd = fs.openSync(executable, 'wx+', 0o700)
     const created=fs.fstatSync(targetFd)
     copiedIdentity={dev:created.dev,ino:created.ino}
     const block = Buffer.allocUnsafe(65536)
@@ -173,8 +173,6 @@ export function spawnWindowsMaintenanceHelper(input: WindowsMaintenanceHelperInp
       offset += count
     }
     fs.fsyncSync(targetFd)
-    fs.closeSync(targetFd); targetFd = undefined
-    targetFd = fs.openSync(executable, 'r')
     const after = fs.fstatSync(sourceFd)
     const named = fs.lstatSync(source)
     noReparseAncestors(source)

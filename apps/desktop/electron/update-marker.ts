@@ -128,13 +128,11 @@ function readMarkerExclusion(
 
   try {
     file = markerPath(trustedHome(youtabHome).directory)
-    const before = fs.lstatSync(file, { bigint: true })
-
-    if (!regularOwnedFile(before) || before.size > 4096n) {return null}
     fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0))
     identity = fs.fstatSync(fd, { bigint: true })
+    const before = fs.lstatSync(file, { bigint: true })
 
-    if (!regularOwnedFile(identity) || !sameFile(before, identity) || identity.size > 4096n) {return null}
+    if (!regularOwnedFile(before) || !regularOwnedFile(identity) || !sameFile(before, identity) || identity.size > 4096n) {return null}
     // A regular inode can grow after stat. Read one extra byte to detect the
     // limit without synchronously reading an unbounded file in Electron.
     const bytes = Buffer.alloc(4097)
@@ -215,13 +213,11 @@ function windowsInstallExclusion(directory: string): UpdateExclusion | null {
   let fd
 
   try {
-    const before = fs.lstatSync(file, { bigint: true })
-
-    if (!regularOwnedFile(before)) {throw new Error('Unsafe install lock object')}
     fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0))
     const opened = fs.fstatSync(fd, { bigint: true })
+    const before = fs.lstatSync(file, { bigint: true })
 
-    if (!regularOwnedFile(opened) || !sameFile(before, opened)) {throw new Error('Install lock changed')}
+    if (!regularOwnedFile(before) || !regularOwnedFile(opened) || !sameFile(before, opened)) {throw new Error('Install lock changed')}
 
     return null
   } catch (error) {

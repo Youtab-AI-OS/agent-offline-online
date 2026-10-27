@@ -250,7 +250,7 @@ console.error = (...args) => {
     .map((arg) => (arg && arg.stack ? arg.stack : String(arg)))
     .join(" ");
   classifyStreamLog(text);
-  originalConsoleError(logLine(...args));
+  originalConsoleError(logLine(...args).replace(/[\r\n]/g, ""));
 };
 
 const originalConsoleLog = console.log.bind(console);
@@ -259,7 +259,7 @@ console.log = (...args) => {
     .map((arg) => (arg && arg.stack ? arg.stack : String(arg)))
     .join(" ");
   classifyStreamLog(text);
-  originalConsoleLog(logLine(...args));
+  originalConsoleLog(logLine(...args).replace(/[\r\n]/g, ""));
 };
 
 // Upstream liveness probe (see `/probe` handler). A synthetic DM space id +

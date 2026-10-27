@@ -134,17 +134,16 @@ async function noLinks(file: string): Promise<void> {
 
 async function readOfflineEnvelope(file: string, signal: AbortSignal): Promise<Uint8Array> {
   const source = localDescriptorPath(file)
-  await noLinks(source)
 
   if (signal.aborted) {refused('cancelled')}
-  const before = await fs.lstat(source)
-
-  if (!before.isFile() || !before.size || before.size > INNO_METADATA_LIMIT) {refused('metadata-limit')}
-  const handle = await fs.open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+  const handle = await fs.open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
 
   try {
     const opened = await handle.stat()
+    await noLinks(source)
+    const before = await fs.lstat(source)
 
+    if (!before.isFile() || !before.size || before.size > INNO_METADATA_LIMIT) {refused('metadata-limit')}
     if (opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size)
       {refused('offline-descriptor-changed')}
 

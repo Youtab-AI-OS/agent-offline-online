@@ -15,10 +15,15 @@ function parseInstallationId(raw) {
 }
 
 function readInstallationId(filePath) {
-  try {
-    const stat = fs.lstatSync(filePath)
+  let descriptor
 
-    if (!stat.isFile() || stat.isSymbolicLink()) {
+  try {
+    descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0))
+    const stat = fs.fstatSync(descriptor)
+    const named = fs.lstatSync(filePath)
+
+    if (!stat.isFile() || !named.isFile() || named.isSymbolicLink() ||
+        named.dev !== stat.dev || named.ino !== stat.ino || named.size !== stat.size) {
       return ''
     }
 
@@ -27,12 +32,14 @@ function readInstallationId(filePath) {
     }
 
     if (process.platform !== 'win32' && (stat.mode & 0o777) !== 0o600) {
-      fs.chmodSync(filePath, 0o600)
+      fs.fchmodSync(descriptor, 0o600)
     }
 
-    return parseInstallationId(fs.readFileSync(filePath, 'utf8'))
+    return parseInstallationId(fs.readFileSync(descriptor, 'utf8'))
   } catch {
     return ''
+  } finally {
+    if (descriptor !== undefined) {fs.closeSync(descriptor)}
   }
 }
 

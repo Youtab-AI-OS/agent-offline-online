@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { logLine } from './log-framing.mjs'
-const diagnosticLog = (...args) => console.log(logLine(...args))
-const diagnosticError = (...args) => console.error(logLine(...args))
+const diagnosticLog = (...args) => console.log(logLine(...args).replace(/[\r\n]/g, ''))
+const diagnosticError = (...args) => console.error(logLine(...args).replace(/[\r\n]/g, ''))
 // Comprehensive overlay render-churn measurement on the live instance.
 // Measures: cmdk root + submenus, settings, command center, capabilities, system overlays.
 // Read-only — never closes the app, only navigates and clicks.
@@ -97,8 +97,7 @@ async function main() {
   const avail = await eval_(ws, `typeof __RENDER_COUNTS__`)
   diagnosticLog(`__RENDER_COUNTS__: ${avail}`)
   if (avail !== 'object') {
-    diagnosticError('Render counter not loaded. Reload the page.')
-    process.exit(1)
+    throw new Error('Render counter not loaded. Reload the page.')
   }
 
   const results = []

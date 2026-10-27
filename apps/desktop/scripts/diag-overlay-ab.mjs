@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { logLine } from './log-framing.mjs'
-const diagnosticLog = (...args) => console.log(logLine(...args))
-const diagnosticError = (...args) => console.error(logLine(...args))
+const diagnosticLog = (...args) => console.log(logLine(...args).replace(/[\r\n]/g, ''))
+const diagnosticError = (...args) => console.error(logLine(...args).replace(/[\r\n]/g, ''))
 // Robust A/B: measure each surface N times, report median wasted renders.
 // Reduces timing noise from stream ticks landing on different clicks.
 import WebSocket from 'ws'

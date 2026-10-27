@@ -161,9 +161,6 @@ export function accountSyncService(deps: ServiceDependencies) {
       const file = path.join(deps.directory, `${key}.json`)
 
       try {
-        const before = await fs.lstat(file)
-
-        if (!before.isFile() || before.isSymbolicLink()) {throw new Error('UNSAFE_SYNC_STORE')}
         const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
         let bytes: Buffer
 
