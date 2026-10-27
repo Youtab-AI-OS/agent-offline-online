@@ -1,11 +1,11 @@
 {
   "schema": 1,
   "language": "javascript-typescript",
-  "source_run": "https://github.com/Youtab-AI-OS/agent-offline-online/actions/runs/40571780915",
-  "source_head": "cdc8fec53c4f81edda142be84b8c3ece73749ee6",
-  "open_total": 90,
+  "source_run": "https://github.com/Youtab-AI-OS/agent-offline-online/actions/runs/40576869493",
+  "source_head": "321d62444c5385f846fb84434709082ccf7c0498",
+  "open_total": 96,
   "open_security": 41,
-  "open_quality": 49,
+  "open_quality": 55,
   "findings": {
     "[\"js/comparison-between-incompatible-types\",\"ui-tui/packages/youtab-ink/src/ink/useTerminalNotification.ts\",\"52a815d63f81d885:1\",\"5\"]": 1,
     "[\"js/file-access-to-http\",\"apps/desktop/electron/gateway-ws-probe.ts\",\"219e48295dacc298:1\",\"27\"]": 1,
@@ -50,6 +50,8 @@
     "[\"js/prototype-pollution-utility\",\"web/src/lib/nested.ts\",\"b2231c08e835a2c9:1\",\"0\"]": 1,
     "[\"js/redundant-operation\",\"apps/desktop/src/app/starmap/timeline.tsx\",\"b85677360196877:1\",\"17\"]": 1,
     "[\"js/trivial-conditional\",\"apps/desktop/electron/main.ts\",\"698bc3e1aba408eb:1\",\"14\"]": 1,
+    "[\"js/trivial-conditional\",\"plugins/kanban/dashboard/dist/index.js\",\"c0a58441b77f699c:1\",\"9\"]": 1,
+    "[\"js/trivial-conditional\",\"plugins/kanban/dashboard/dist/index.js\",\"dde89b81c0b6ac28:1\",\"16\"]": 1,
     "[\"js/trivial-conditional\",\"web/src/pages/EnvPage.tsx\",\"d509dded8c9b5cf6:1\",\"19\"]": 1,
     "[\"js/unused-local-variable\",\"apps/desktop/e2e/large-session-resume.spec.ts\",\"a77abd71c0e50eef:1\",\"6\"]": 1,
     "[\"js/unused-local-variable\",\"apps/desktop/electron/bootstrap-runner.ts\",\"657cbe08d120bb8c:1\",\"6\"]": 1,
@@ -75,6 +77,10 @@
     "[\"js/unused-local-variable\",\"apps/desktop/src/store/session-color.test.ts\",\"8f6c13e746612aac:1\",\"6\"]": 1,
     "[\"js/unused-local-variable\",\"packages/youtab-ui-bootstrap/src/ui/components/tier-card.tsx\",\"ec3a7a1549ddef49:1\",\"0\"]": 1,
     "[\"js/unused-local-variable\",\"packages/youtab-ui/src/ui/components/tier-card.tsx\",\"ec3a7a1549ddef49:1\",\"0\"]": 1,
+    "[\"js/unused-local-variable\",\"plugins/kanban/dashboard/dist/index.js\",\"32b3b32627948058:1\",\"6\"]": 1,
+    "[\"js/unused-local-variable\",\"plugins/kanban/dashboard/dist/index.js\",\"3ddca0b5dd602c93:1\",\"6\"]": 1,
+    "[\"js/unused-local-variable\",\"plugins/kanban/dashboard/dist/index.js\",\"3f80d48885759771:1\",\"7\"]": 1,
+    "[\"js/unused-local-variable\",\"plugins/kanban/dashboard/dist/index.js\",\"f15bba7603962f1f:1\",\"6\"]": 1,
     "[\"js/unused-local-variable\",\"scripts/whatsapp-bridge/bridge.js\",\"47428d98a75c2955:1\",\"9\"]": 1,
     "[\"js/unused-local-variable\",\"skills/creative/pretext/templates/donut-orbit.html\",\"217f31df914bd374:1\",\"9\"]": 1,
     "[\"js/unused-local-variable\",\"ui-tui/packages/youtab-ink/src/ink/dom.ts\",\"af719ee194853036:1\",\"9\"]": 1,
@@ -98,7 +104,7 @@
     "[\"js/user-controlled-bypass\",\"apps/desktop/scripts/diag-overlay-full.mjs\",\"4df0fdfc361f21fb:1\",\"4\"]": 1,
     "[\"js/user-controlled-bypass\",\"apps/desktop/scripts/diag-overlay-sweep.mjs\",\"ee168e44f6be07f9:1\",\"4\"]": 1
   },
-  "artifact_count": 2759,
+  "artifact_count": 2760,
   "query_count": 201,
   "required_rules": [
     "js/angular/dependency-injection-mismatch",
@@ -303,7 +309,7 @@
     "js/yield-outside-generator",
     "js/zipslip"
   ],
-  "extracted_count": 2759,
+  "extracted_count": 2760,
   "extracted_paths": [
     ".github/ISSUE_TEMPLATE/bug_report.yml",
     ".github/ISSUE_TEMPLATE/config.yml",
@@ -2340,6 +2346,7 @@
     "plugins/image_gen/openai/plugin.yaml",
     "plugins/image_gen/openrouter/plugin.yaml",
     "plugins/image_gen/xai/plugin.yaml",
+    "plugins/kanban/dashboard/dist/index.js",
     "plugins/kanban/dashboard/manifest.json",
     "plugins/memory/byterover/plugin.yaml",
     "plugins/memory/hindsight/plugin.yaml",

@@ -253,7 +253,7 @@ class TestBrowserVisionConfig:
         shots_dir.mkdir()
         screenshot = shots_dir / "shot.png"
         screenshot.write_bytes(base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg=="
         ))
         return shots_dir, screenshot
 
