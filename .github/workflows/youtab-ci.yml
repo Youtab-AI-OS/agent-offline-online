@@ -213,8 +213,8 @@ jobs:
           & $nodeExe apps/bootstrap-installer/scripts/prepare-webview2.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Pinned Microsoft WebView2 standalone prefetch failed' }
           # The native admission tests deliberately reject mutable ancestors.
-          # RUNNER_TEMP lives under the shared-writable D:\a tree on hosted
-          # runners, so keep only the Cargo target there and put the synthetic
+          # RUNNER_TEMP lives under the hosted runner's shared-writable checkout
+          # tree, so keep only the Cargo target there and put the synthetic
           # private namespace under the runner's owner-private profile.
           $qaParent = Join-Path $env:USERPROFILE 'youtab-native-qa'
           $targetDir = Join-Path $env:RUNNER_TEMP 'youtab-native-cargo'
