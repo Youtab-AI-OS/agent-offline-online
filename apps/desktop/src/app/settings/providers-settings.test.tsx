@@ -1,0 +1,237 @@
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { atom } from 'nanostores'
+import { useState } from 'react'
+import { MemoryRouter } from 'react-router-dom'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { EnvVarInfo, OAuthProvider } from '@/types/youtab'
+import type * as YoutabApi from '@/youtab'
+
+const listOAuthProviders = vi.fn()
+const disconnectOAuthProvider = vi.fn()
+const getEnvVars = vi.fn()
+const getCustomEndpoints = vi.fn()
+const startManualProviderOAuth = vi.fn()
+const startManualLocalEndpoint = vi.fn()
+const onboarding = atom({ manual: false })
+
+vi.mock('@/youtab', async importOriginal => ({
+  ...(await importOriginal<typeof YoutabApi>()),
+  disconnectOAuthProvider: (providerId: string) => disconnectOAuthProvider(providerId),
+  getEnvVars: () => getEnvVars(),
+  getCustomEndpoints: () => getCustomEndpoints(),
+  listOAuthProviders: () => listOAuthProviders()
+}))
+
+vi.mock('@/store/onboarding', () => ({
+  $desktopOnboarding: onboarding,
+  startManualProviderOAuth: (providerId: string) => startManualProviderOAuth(providerId),
+  startManualLocalEndpoint: (reason: null | string) => startManualLocalEndpoint(reason)
+}))
+
+function provider(id: string, loggedIn: boolean, patch: Partial<OAuthProvider> = {}): OAuthProvider {
+  return {
+    cli_command: `youtab auth add ${id}`,
+    disconnectable: true,
+    docs_url: '',
+    flow: 'device_code',
+    id,
+    name: id === 'youtab' ? 'Youtab Portal' : 'MiniMax',
+    status: {
+      logged_in: loggedIn
+    },
+    ...patch
+  }
+}
+
+// One `/api/env` row (an EnvVarInfo) for the API-keys view. Mirrors the
+// `provider()` factory above: a valid base + per-test overrides, typed against
+// the real response shape so it can't drift from EnvVarInfo.
+function keyVar(patch: Partial<EnvVarInfo> = {}): EnvVarInfo {
+  return {
+    advanced: false,
+    category: 'provider',
+    description: '',
+    is_password: true,
+    is_set: false,
+    provider: '',
+    provider_label: '',
+    redacted_value: null,
+    tools: [],
+    url: '',
+    ...patch
+  }
+}
+
+beforeEach(() => {
+  onboarding.set({ manual: false })
+  getEnvVars.mockResolvedValue({})
+  getCustomEndpoints.mockResolvedValue({ endpoints: [] })
+  disconnectOAuthProvider.mockResolvedValue({ ok: true, provider: 'youtab' })
+  listOAuthProviders.mockResolvedValue({
+    providers: [provider('youtab', true), provider('minimax-oauth', false)]
+  })
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+})
+
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+  vi.clearAllMocks()
+})
+
+async function renderProvidersSettings() {
+  const { ProvidersSettings } = await import('./providers-settings')
+  let result: ReturnType<typeof render>
+  await act(async () => {
+    result = render(<MemoryRouter><ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="accounts" /></MemoryRouter>)
+  })
+
+  return result!
+}
+
+describe('ProvidersSettings', () => {
+  it('disconnects a connected provider account and refreshes the accounts list', async () => {
+    await renderProvidersSettings()
+
+    const remove = await screen.findByRole('button', { name: 'Remove Youtab Portal' })
+    await act(async () => {
+      fireEvent.click(remove)
+    })
+
+    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('youtab'))
+    expect(listOAuthProviders).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps provider selection separate from account removal', async () => {
+    await renderProvidersSettings()
+
+    await act(async () => {
+      fireEvent.click(await screen.findByText('Youtab Portal'))
+    })
+
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('youtab')
+    expect(disconnectOAuthProvider).not.toHaveBeenCalled()
+  })
+
+  it('does not offer removal for externally managed providers', async () => {
+    listOAuthProviders.mockResolvedValue({
+      providers: [
+        provider('qwen-oauth', true, {
+          cli_command: 'youtab auth add qwen-oauth',
+          disconnect_hint: "Use `youtab auth add qwen-oauth` or that provider's CLI to remove it.",
+          disconnectable: false,
+          flow: 'external',
+          name: 'Qwen (via Qwen CLI)'
+        })
+      ]
+    })
+
+    await renderProvidersSettings()
+
+    expect(await screen.findByText('Qwen Code')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Remove Qwen Code' })).toBeNull()
+    expect(screen.getByText(/managed by its own CLI/)).toBeTruthy()
+  })
+
+  it('renders a Keys card for a backend-tagged provider with no PROVIDER_GROUPS prefix', async () => {
+    // A provider the backend catalog tags (provider/provider_label) but that has
+    // no desktop PROVIDER_GROUPS prefix row must still render its own card —
+    // this is the GUI/CLI drift fix: membership comes from the backend, not
+    // from the hand-maintained prefix list.
+    getEnvVars.mockResolvedValue({
+      WIDGETAI_API_KEY: keyVar({
+        provider: 'widgetai',
+        provider_label: 'WidgetAI',
+        url: 'https://widgetai.example/keys'
+      })
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    await act(async () => {
+      render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+    })
+
+    expect(await screen.findByText('WidgetAI')).toBeTruthy()
+  })
+
+  it('orders API-key providers by priority then name, and filters them via search', async () => {
+    // These three providers have no curated PROVIDER_GROUPS priority, so they
+    // share the default priority and fall back to alphabetical among themselves
+    // (Acme, Middle, Zebra) — exercising the name tiebreak of the priority sort.
+    getEnvVars.mockResolvedValue({
+      ZEBRA_API_KEY: keyVar({ provider: 'zebra', provider_label: 'Zebra' }),
+      ACME_API_KEY: keyVar({ provider: 'acme', provider_label: 'Acme' }),
+      MIDDLE_API_KEY: keyVar({ provider: 'middle', provider_label: 'Middle' })
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    // Equal priority → alphabetical tiebreak: Acme, Middle, Zebra.
+    await screen.findByText('Acme')
+    const labels = screen.getAllByText(/Acme|Middle|Zebra/).map(el => el.textContent)
+    expect(labels).toEqual(['Acme', 'Middle', 'Zebra'])
+
+    // Typing narrows the list to matching providers only.
+    const search = screen.getByPlaceholderText('Search providers…')
+    await act(async () => {
+      fireEvent.change(search, { target: { value: 'mid' } })
+    })
+
+    await waitFor(() => expect(screen.queryByText('Acme')).toBeNull())
+    expect(screen.getByText('Middle')).toBeTruthy()
+    expect(screen.queryByText('Zebra')).toBeNull()
+
+    // A non-matching query shows the empty-state copy.
+    await act(async () => {
+      fireEvent.change(search, { target: { value: 'nonesuch-xyz' } })
+    })
+    expect(await screen.findByText('No providers match your search.')).toBeTruthy()
+  })
+
+  it('offers a Local / custom endpoint entry in the API-keys tab that opens the custom-endpoint flow', async () => {
+    // Navigate to the existing endpoint page rather than relying on the global
+    // onboarding overlay, which is not mounted by every settings surface.
+    getEnvVars.mockResolvedValue({})
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    const onViewChange = vi.fn()
+    render(<ProvidersSettings onClose={vi.fn()} onViewChange={onViewChange} view="keys" />)
+
+    const row = await screen.findByText('Local / custom endpoint')
+    expect(screen.getByText(/OpenAI-compatible endpoint/)).toBeTruthy()
+
+    fireEvent.click(row)
+
+    await waitFor(() => expect(onViewChange).toHaveBeenCalledWith('custom-endpoints'))
+    expect(startManualLocalEndpoint).not.toHaveBeenCalled()
+  })
+
+  it('opens custom endpoints independently while the env catalogue is unavailable', async () => {
+    getEnvVars.mockImplementation(() => new Promise(() => {}))
+    const { ProvidersSettings } = await import('./providers-settings')
+    render(<MemoryRouter><ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="custom-endpoints" /></MemoryRouter>)
+    expect(await screen.findByLabelText('Endpoint URL')).toBeTruthy()
+    expect(getCustomEndpoints).toHaveBeenCalledOnce()
+  })
+
+  it('opens Fireworks with its actual key group expanded', async () => {
+    getEnvVars.mockResolvedValue({
+      FIREWORKS_API_KEY: keyVar({ provider: 'fireworks', provider_label: 'Fireworks AI' }),
+      FIREWORKS_BASE_URL: keyVar({ provider: 'fireworks', provider_label: 'Fireworks AI', advanced: true, is_password: false, description: 'Fireworks endpoint' })
+    })
+    const { ProvidersSettings } = await import('./providers-settings')
+    function Harness() {
+      const [view, setView] = useState<'accounts' | 'keys' | 'custom-endpoints'>('accounts')
+      return <MemoryRouter><ProvidersSettings onClose={vi.fn()} onViewChange={setView} view={view} /></MemoryRouter>
+    }
+    render(<Harness />)
+    fireEvent.click(await screen.findByText('Fireworks AI'))
+    expect(await screen.findByText('Fireworks endpoint')).toBeTruthy()
+    expect(screen.getByPlaceholderText('Paste Fireworks AI key')).toBeTruthy()
+  })
+})

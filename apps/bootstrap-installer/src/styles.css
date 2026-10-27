@@ -1,0 +1,133 @@
+/*
+ * Youtab Setup — defer entirely to the desktop's styles.css.
+ *
+ * Rather than re-implement the Youtab design system (and inevitably drift
+ * from it), we import apps/desktop/src/styles.css wholesale. The desktop
+ * is the canonical source of truth for fonts, color tokens, button chrome,
+ * scrollbars, layout utilities, and animations. Any change to the
+ * Youtab look propagates here automatically with no copy-paste maintenance.
+ *
+ * Path resolution caveats:
+ *   - Tailwind v4's `@import` resolves relative to this file. The desktop's
+ *     `@source '../../../node_modules/...'` declarations therefore re-resolve
+ *     against apps/bootstrap-installer/src/. Since both apps live two levels
+ *     deep under the same repo root, `../../../node_modules` lands in the
+ *     same place. (Verify if either app ever moves.)
+ *   - The desktop's `@font-face url('../../../node_modules/...')` references
+ *     are baked into the *imported* stylesheet; CSS resolves url()s relative
+ *     to the file that contains them, so they continue to point at the
+ *     correct node_modules path even from here.
+ *
+ * Follows the OS appearance: the installer has no in-app theme switcher, so
+ * src/theme.ts tracks the Tauri window theme and toggles `.dark` on
+ * <html>. The desktop's runtime applyTheme() normally PAINTS the dark seed
+ * colors inline (its imported :root.dark below only flips the per-mode mix
+ * knobs + neutral chrome), so we supply the Youtab *dark* seeds ourselves in the
+ * :root.dark block at the end of this file.
+ */
+@import '../../desktop/src/styles.css';
+
+/* Native Windows select menus do not inherit the webview's dark palette. */
+.youtab-channel-select {
+  color-scheme: light;
+  color: var(--theme-foreground);
+  background-color: var(--theme-background-seed);
+  border: 1px solid var(--theme-secondary);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  min-width: 9rem;
+  cursor: pointer;
+}
+
+:root.dark .youtab-channel-select {
+  color-scheme: dark;
+}
+
+.youtab-channel-select option {
+  color: var(--theme-foreground);
+  background-color: var(--theme-background-seed);
+}
+
+.youtab-channel-select:focus-visible {
+  outline: 2px solid var(--theme-primary);
+  outline-offset: 2px;
+}
+
+/* Installer accent only; Desktop themes remain independently selectable. */
+:root {
+  --theme-foreground: #164b3c;
+  --theme-primary: #087f5b;
+  --theme-midground: #087f5b;
+  --theme-secondary: #276b57;
+  --theme-accent-soft: #d8f3e8;
+}
+
+@keyframes youtab-working-mark {
+  0%, 100% { transform: rotate(0deg) scale(0.9); opacity: 0.65; }
+  50% { transform: rotate(180deg) scale(1); opacity: 1; }
+  100% { transform: rotate(360deg) scale(0.9); }
+}
+
+.youtab-working-mark {
+  animation: youtab-working-mark 2.8s linear infinite;
+}
+
+/* Installer-only additions: a fade-in animation and a warm radial glow
+   for the welcome screen. Everything else inherits from the desktop. */
+@keyframes youtab-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.youtab-agent-runtime-fade-in {
+  animation: youtab-fade-in 0.45s ease-out both;
+}
+
+.youtab-agent-runtime-glow {
+  background: radial-gradient(
+    ellipse at center,
+    color-mix(in srgb, var(--ui-warm) 18%, transparent) 0%,
+    transparent 60%
+  );
+}
+
+/*
+ * Dark appearance — Youtab dark seeds.
+ *
+ * The imported desktop :root.dark only flips the per-mode mix knobs + neutral
+ * chrome; the seed COLORS are normally painted at runtime by the desktop's
+ * applyTheme(). The installer has no theme runtime, so we mirror them here from
+ * apps/desktop/src/themes/presets.ts (youtabTheme.darkColors). The whole
+ * --ui-* / --dt-* chain in the imported stylesheet derives from these seeds, so
+ * flipping them is enough — we only additionally override the few tokens
+ * applyTheme() sets inline that DON'T derive from a seed (primary-foreground on
+ * the cream accent, destructive). Unlayered on purpose so it wins over the
+ * imported @layer base :root light seeds. Keep in sync with youtabTheme.darkColors
+ * if that palette is retuned.
+ */
+:root.dark {
+  color-scheme: dark;
+
+  --theme-foreground: #d7f5e8;
+  --theme-primary: #70dbaf;
+  --theme-secondary: #36896c;
+  --theme-accent-soft: #1b684c;
+  --theme-midground: #70dbaf;
+  --theme-warm: #ffe6cb;
+  --theme-background-seed: #07251d;
+  --theme-sidebar-seed: #061f18;
+  --theme-card-seed: #0d3025;
+  --theme-elevated-seed: #123a2e;
+  --theme-bubble-seed: #143b2e;
+
+  /* Non-derived shadcn tokens applyTheme() paints inline (Youtab dark values). */
+  --dt-primary-foreground: #07251d;
+  --dt-destructive: #c0473a;
+  --dt-destructive-foreground: #fef2f2;
+}

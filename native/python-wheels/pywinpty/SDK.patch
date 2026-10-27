@@ -1,0 +1,19 @@
+--- a/winpty/ptyprocess.py
++++ b/winpty/ptyprocess.py
+@@ -348,14 +348,8 @@
+             except socket.error:
+                 break
+ 
+-            # Handle end of file.
+-            if pty.iseof():
+-                try:
+-                    client.send(b'')
+-                except socket.error:
+-                    pass
+-                finally:
+-                    break
++            # Native iseof describes the pipe/process, not the unread native
++            # read cache. Drain it until pty.read actually reports EOF.
+ 
+             call += 1
+         except Exception as e:

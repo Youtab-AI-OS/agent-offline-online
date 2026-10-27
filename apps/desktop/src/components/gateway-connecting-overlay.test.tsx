@@ -1,0 +1,253 @@
+import { act, cleanup, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+
+import { I18nProvider } from '@/i18n'
+import type { Locale } from '@/i18n/types'
+import { $desktopBoot } from '@/store/boot'
+import { $gatewaySwitching } from '@/store/gateway-switch'
+import { $desktopOnboarding } from '@/store/onboarding'
+import { setGatewayState } from '@/store/session'
+
+import { BootFailureOverlay } from './boot-failure-overlay'
+import { GatewayConnectingOverlay } from './gateway-connecting-overlay'
+
+// Repro for the "remote gateway → stuck on CONNECTING, no way to settings"
+// report. The connecting overlay (full-screen, pointer-events on) used
+// to be shown whenever `gatewayState !== 'open' && !boot.error`. The ONLY escape
+// hatch — BootFailureOverlay, which has "Use local gateway" / "Sign in" /
+// "Retry" — only renders when `boot.error` is set.
+//
+// useGatewayBoot only calls failDesktopBoot() (which sets boot.error) when the
+// INITIAL boot() throws. After the first successful connect (bootCompleted),
+// any later socket drop goes through scheduleReconnect(), which loops FOREVER
+// against the dead remote. So gatewayState sits at 'closed'/'error' with
+// boot.error null. The fix keeps the initial-boot overlay out of post-boot
+// reconnects, leaving chat/settings usable while the reconnect loop runs.
+
+function resetStores() {
+  setGatewayState('idle')
+  $gatewaySwitching.set(false)
+  $desktopBoot.set({
+    error: null,
+    fakeMode: false,
+    message: 'ready',
+    phase: 'renderer.ready',
+    progress: 100,
+    running: false,
+    timestamp: Date.now(),
+    visible: false
+  })
+  $desktopOnboarding.set({
+    configured: true,
+    flow: { status: 'idle' },
+    mode: 'oauth',
+    providers: null,
+    reason: null,
+    requested: false,
+    firstRunSkipped: false,
+    manual: false,
+    localEndpoint: false
+  })
+}
+
+beforeEach(resetStores)
+afterEach(cleanup)
+
+// Match the startup status specifically so the recovery overlay's
+// "Lost connection…" copy doesn't read as a false positive.
+const isConnectingShown = () => Boolean(screen.queryByRole('status', { name: 'Youtab trying to connect' }))
+
+const isRecoveryShown = () =>
+  Boolean(screen.queryByText(/use local gateway/i) || screen.queryByText(/retry/i) || screen.queryByText(/sign in/i))
+
+describe('connecting overlay vs recovery surface', () => {
+  it.each<[Locale, string]>([
+    ['en', 'Youtab trying to connect'],
+    ['zh', 'Youtab 正在尝试连接'],
+    ['zh-hant', 'Youtab 正在嘗試連線'],
+    ['ja', 'Youtab が接続を試みています'],
+    ['ar', 'يحاول Youtab الاتصال']
+  ])('localizes visible and accessible startup status for %s', async (locale, message) => {
+    setGatewayState('connecting')
+    $desktopBoot.set({ ...$desktopBoot.get(), running: true, visible: true, progress: 10 })
+
+    await act(async () => {
+      render(
+        <I18nProvider configClient={null} initialLocale={locale}>
+          <GatewayConnectingOverlay />
+        </I18nProvider>
+      )
+    })
+
+    const status = screen.getByRole('status', { name: message })
+    expect(status.textContent).toBe(`${message}…`)
+    expect(status.querySelector('[aria-hidden="true"]')?.textContent).toBe('…')
+  })
+
+  it('hard initial-boot failure surfaces the recovery overlay (the working path)', async () => {
+    // failDesktopBoot() ran: error set, gateway never opened.
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      error: 'Youtab backend did not become ready',
+      running: false,
+      visible: true
+    })
+    setGatewayState('error')
+
+    await act(async () => {
+      render(
+        <>
+          <GatewayConnectingOverlay />
+          <BootFailureOverlay />
+        </>
+      )
+    })
+
+    expect(isRecoveryShown()).toBe(true)
+    // Connecting overlay bows out when boot.error is set.
+    expect(isConnectingShown()).toBe(false)
+  })
+
+  it('post-boot socket drops do not re-cover the app with the initial CONNECTING overlay', async () => {
+    // 1. Initial boot succeeded: gateway opened, boot completed (no error).
+    setGatewayState('open')
+
+    let rerender!: (ui: React.ReactElement) => void
+    await act(async () => {
+      const result = render(
+        <>
+          <GatewayConnectingOverlay />
+          <BootFailureOverlay />
+        </>
+      )
+
+      rerender = result.rerender
+    })
+
+    expect(isConnectingShown()).toBe(false)
+
+    // 2. The remote VPS socket drops (sleep/wake, remote restart, network).
+    //    bootCompleted is true, so useGatewayBoot routes this through
+    //    scheduleReconnect() — boot.error stays NULL.
+    await act(async () => {
+      setGatewayState('closed')
+      rerender!(
+        <>
+          <GatewayConnectingOverlay />
+          <BootFailureOverlay />
+        </>
+      )
+    })
+
+    // The initial-boot connecting overlay stays out of the way, so settings and
+    // the composer remain reachable during the reconnect loop.
+    expect(isConnectingShown()).toBe(false)
+    expect(isRecoveryShown()).toBe(false)
+
+    // 3. Reconnect loops against the dead remote: gatewayState bounces closed
+    //    → error → closed. Until the escalation path sets boot.error, the app
+    //    remains usable instead of modal-blocked.
+    await act(async () => {
+      setGatewayState('error')
+      rerender!(
+        <>
+          <GatewayConnectingOverlay />
+          <BootFailureOverlay />
+        </>
+      )
+    })
+    expect($desktopBoot.get().error).toBeNull()
+    expect(isConnectingShown()).toBe(false)
+    expect(isRecoveryShown()).toBe(false)
+  })
+
+  it('soft gateway switch keeps the shell — no fullscreen CONNECTING', async () => {
+    setGatewayState('open')
+
+    const { rerender } = render(
+      <>
+        <GatewayConnectingOverlay />
+        <BootFailureOverlay />
+      </>
+    )
+
+    await act(async () => {
+      $gatewaySwitching.set(true)
+      $desktopBoot.set({
+        ...$desktopBoot.get(),
+        running: true,
+        visible: true,
+        progress: 4,
+        error: null
+      })
+      setGatewayState('closed')
+      rerender(
+        <>
+          <GatewayConnectingOverlay />
+          <BootFailureOverlay />
+        </>
+      )
+    })
+
+    expect(isConnectingShown()).toBe(false)
+    expect(isRecoveryShown()).toBe(false)
+  })
+
+  it('startup screen shows the "Youtab Agent Runtime" heading in the display font and Ice Blue', async () => {
+    // Drive the initial-boot connecting state so the overlay renders.
+    setGatewayState('connecting')
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      error: null,
+      running: true,
+      visible: true,
+      progress: 10
+    })
+
+    await act(async () => {
+      render(<GatewayConnectingOverlay />)
+    })
+
+    // Exact heading text, no other title/intro wording added.
+    const heading = screen.getByRole('heading', { name: 'Youtab Agent Runtime' })
+    expect(heading.tagName).toBe('H1')
+    expect(heading.textContent).toBe('Youtab Agent Runtime')
+    // Ice Blue via the brand token and the bundled display font.
+    expect(heading.className).toContain('var(--youtab-ice-blue)')
+    expect(heading.className).toContain('youtab-display-title')
+    // The stable status copy remains subordinate to the heading. Only its
+    // trailing dots animate, so users can read the message at every frame.
+    const status = screen.getByRole('status', { name: 'Youtab trying to connect' })
+    expect(status).not.toBeNull()
+    expect(status).not.toBe(heading)
+    expect(status.textContent).toBe('Youtab trying to connect…')
+    expect(status.querySelector('[class*="motion-safe:animate-pulse"]')).not.toBeNull()
+  })
+
+  it('FIX: once the prolonged reconnect raises a recoverable boot error, the recovery overlay takes over', async () => {
+    // Mirrors what useGatewayBoot.scheduleReconnect() now does after ~45s of
+    // failed post-boot reconnects: it calls failDesktopBoot(), flipping the UI
+    // from the dead-end CONNECTING overlay to the recovery surface.
+    setGatewayState('error')
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      error: 'Lost connection to the Youtab gateway and could not reconnect.',
+      running: false,
+      visible: true
+    })
+
+    await act(async () => {
+      render(
+        <>
+          <GatewayConnectingOverlay />
+          <BootFailureOverlay />
+        </>
+      )
+    })
+
+    // Escape hatch is now reachable; the connecting overlay bows out.
+    expect(isRecoveryShown()).toBe(true)
+    expect(screen.getByRole('button', { name: /gateway settings/i })).toBeTruthy()
+    expect(isConnectingShown()).toBe(false)
+  })
+})

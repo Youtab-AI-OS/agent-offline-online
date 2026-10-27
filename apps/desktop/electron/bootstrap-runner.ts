@@ -1,0 +1,1281 @@
+/**
+ * bootstrap-runner.ts
+ *
+ * Drives apps/desktop's first-launch install of Youtab Agent Runtime by spawning
+ * scripts/install.ps1 stage-by-stage and streaming progress events back to
+ * the renderer.
+ *
+ * Wired from electron/main.ts:
+ *   import { runBootstrap }from './bootstrap-runner'
+ *   const result = await runBootstrap({
+ *     installStamp,        // INSTALL_STAMP from main.ts (may be null in dev)
+ *     activeRoot,          // ACTIVE_YOUTAB_AGENT_ROOT
+ *     sourceRepoRoot,      // SOURCE_REPO_ROOT (for dev install.ps1 lookup)
+ *     youtabHome,          // YOUTAB_AGENT_HOME
+ *     logRoot,             // YOUTAB_AGENT_HOME/logs
+ *     emit: ev => {...}    // event sink (sender.send or similar)
+ *   })
+ *
+ * Emits events with shape:
+ *   { type: 'manifest',  stages: [{name, title, category, needs_user_input}, ...] }
+ *   { type: 'stage',     name, state: 'running'|'succeeded'|'skipped'|'failed',
+ *                        json?, durationMs?, error? }
+ *   { type: 'log',       stage?, line, stream: 'stdout'|'stderr' } // raw line from install.ps1
+ *   { type: 'complete',  marker: <written marker payload> }
+ *   { type: 'failed',    stage?, error }     // bootstrap aborted
+ *
+ * Resolves with the same shape as the final 'complete' or 'failed' event so
+ * callers can await either way.
+ *
+ * NOT implemented yet (deferred to Phase 1E / 1F):
+ *   - User-facing retry / cancel from the renderer (event channels exist;
+ *     no UI consumes them yet)
+ */
+
+import { execFileSync, spawn } from 'node:child_process'
+import fs from 'node:fs'
+import fsp from 'node:fs/promises'
+import https from 'node:https'
+import path from 'node:path'
+
+import { channelIndex, type ReleaseChannel, verifiedSetupRelease } from './release-delivery'
+import { hiddenWindowsChildOptions } from './windows-child-options'
+
+const IS_WINDOWS = process.platform === 'win32'
+
+const STAMP_COMMIT_RE = /^[0-9a-f]{7,40}$/i
+const FALLBACK_COMMIT_RE = /^0{7,40}$/
+const FALLBACK_BRANCH = 'main'
+const PILOT_RELEASE_PATH = /^\/pilot-runtime-[0-9a-f]{32,}\/releases$/
+const EXACT_SHA = /^[0-9a-f]{40}$/
+const EXACT_SHA256 = /^[0-9a-f]{64}$/
+
+function isPackagedWindowsCustomerMode(isWindows: boolean, isPackaged: boolean): boolean {
+  return isWindows && isPackaged
+}
+
+function pendingRuntimeInstallMarker(activeRoot: string): string {
+  return path.join(path.dirname(activeRoot), '.youtab-runtime-install-pending')
+}
+
+function hasPendingRuntimeInstall(activeRoot: string): boolean {
+  return fs.existsSync(pendingRuntimeInstallMarker(activeRoot))
+}
+
+/** The customer release origin is fixed; the high-entropy path is build-owned. */
+function pilotReleaseBaseUrl(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new Error('Runtime release URL is missing')
+  }
+
+  const url = new URL(value)
+
+  if (
+    url.protocol !== 'https:' ||
+    url.hostname !== 'api.youtab.io' ||
+    url.port ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    !PILOT_RELEASE_PATH.test(url.pathname.replace(/\/$/, ''))
+  ) {
+    throw new Error('Runtime release URL is not an approved pilot delivery path')
+
+  }
+
+  return url.origin + url.pathname.replace(/\/$/, '')
+}
+
+function trustedPilotReleaseBaseUrl(packagedBase: unknown, installedBase: unknown): string {
+  const base = pilotReleaseBaseUrl(packagedBase)
+
+  if (installedBase !== base) {
+    throw new Error('Installed Runtime release origin does not match the packaged Youtab build')
+  }
+
+  return base
+}
+
+function releaseUrl(value: unknown, expectedPrefix: string): string {
+  if (typeof value !== 'string') {
+    throw new Error('Runtime release metadata URL is missing')
+  }
+
+  const url = new URL(value)
+
+  if (
+    url.protocol !== 'https:' ||
+    url.origin !== 'https://api.youtab.io' ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    !url.pathname.startsWith(expectedPrefix) ||
+    url.pathname.includes('%') ||
+    url.pathname.includes('..')
+  ) {
+    throw new Error('Runtime release metadata URL escapes the approved release path')
+
+  }
+
+  return url.href
+}
+
+function parsePilotRelease(value: any, base: string, isLatest: boolean) {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Runtime release metadata is malformed')
+  }
+
+  const { version, release_sequence, source_sha, artifact_url, sha256, created_at, platform, architecture, format } =
+    value
+  if (
+    typeof version !== 'string' ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(version) ||
+    version.includes('..') ||
+    !Number.isSafeInteger(release_sequence) ||
+    release_sequence < 1 ||
+    typeof source_sha !== 'string' ||
+    !EXACT_SHA.test(source_sha) ||
+    typeof sha256 !== 'string' ||
+    !EXACT_SHA256.test(sha256) ||
+    typeof created_at !== 'string' ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(created_at) ||
+    !Number.isFinite(Date.parse(created_at)) ||
+    platform !== 'windows' ||
+    architecture !== 'x64' ||
+    format !== 'zip'
+  ) {
+    throw new Error('Runtime release metadata has invalid identity or platform fields')
+
+  }
+
+  const releaseNotes = value.release_notes
+  if (
+    !Array.isArray(releaseNotes) ||
+    releaseNotes.length < 1 ||
+    releaseNotes.length > 12 ||
+    releaseNotes.some(note => typeof note !== 'string' || !note.trim() || note.length > 240 ||
+      Array.from(note).some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127))
+  ) {
+    throw new Error('Runtime release notes are invalid')
+  }
+
+  const prefix = `${new URL(base).pathname}/${source_sha}/`
+  const expectedArchive = `${base}/${source_sha}/youtab-runtime-${source_sha}.zip`
+  if (releaseUrl(artifact_url, prefix) !== expectedArchive) {
+    throw new Error('Runtime archive URL does not match its immutable identity')
+  }
+  const manifestUrl = isLatest ? releaseUrl(value.manifest_url, prefix) : null
+  if (manifestUrl && manifestUrl !== `${base}/${source_sha}/manifest.json`) {
+    throw new Error('Runtime manifest URL does not match its immutable identity')
+  }
+  return {
+    version,
+    release_sequence,
+    source_sha,
+    artifact_url,
+    sha256,
+    created_at,
+    platform,
+    architecture,
+    format,
+    release_notes: releaseNotes,
+    manifest_url: manifestUrl
+  }
+}
+
+function readReleaseJson(url: string): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { timeout: 10000 }, res => {
+      if (res.statusCode !== 200) {
+        res.resume()
+        reject(new Error(`Runtime release metadata returned HTTP ${res.statusCode}`))
+        return
+      }
+      let body = ''
+      res.setEncoding('utf8')
+      res.on('data', chunk => {
+        body += chunk
+        if (body.length > 65536) {
+          req.destroy(new Error('Runtime release metadata exceeds size limit'))
+        }
+      })
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(body))
+        } catch {
+          reject(new Error('Runtime release metadata is not JSON'))
+        }
+      })
+    })
+    req.on('timeout', () => req.destroy(new Error('Runtime release metadata timed out')))
+    req.on('error', reject)
+  })
+}
+
+async function fetchApprovedPilotRelease(baseValue: unknown, readJson = readReleaseJson, channel?: ReleaseChannel) {
+  const base = pilotReleaseBaseUrl(baseValue)
+  const latestRaw = await readJson(channel ? channelIndex(base, channel) : `${base}/latest.json`)
+  const latest = parsePilotRelease(latestRaw, base, true)
+  const immutableRaw = await readJson(latest.manifest_url!)
+  const immutable = parsePilotRelease(immutableRaw, base, false)
+  for (const field of [
+    'version',
+    'release_sequence',
+    'source_sha',
+    'artifact_url',
+    'sha256',
+    'created_at',
+    'platform',
+    'architecture',
+    'format'
+  ]) {
+    if (latest[field] !== immutable[field]) {
+      throw new Error('Runtime latest and immutable manifest disagree')
+    }
+  }
+  if (JSON.stringify(latest.release_notes) !== JSON.stringify(immutable.release_notes)) {
+    throw new Error('Runtime latest and immutable release notes disagree')
+  }
+  // Channel delivery requires a matching common Setup descriptor. Old callers
+  // retain the legacy index solely during the migration period.
+  const setup = channel ? verifiedSetupRelease(base, latestRaw, immutableRaw, 0) : null
+  return { ...latest, setup }
+}
+
+function classifyPilotReleaseUpdate(
+  installed: any,
+  latest: Pick<Awaited<ReturnType<typeof fetchApprovedPilotRelease>>, 'release_sequence' | 'source_sha' | 'sha256'>
+    & Partial<Pick<Awaited<ReturnType<typeof fetchApprovedPilotRelease>>, 'setup'>>,
+  installedSetupCurrent = true
+) {
+  if (
+    !installed ||
+    typeof installed.pinnedCommit !== 'string' ||
+    !EXACT_SHA.test(installed.pinnedCommit) ||
+    !Number.isSafeInteger(installed.releaseSequence) ||
+    installed.releaseSequence < 1 ||
+    typeof installed.artifactSha256 !== 'string' ||
+    !EXACT_SHA256.test(installed.artifactSha256)
+  ) {
+    throw new Error('Installed Runtime release identity is missing; repair is required')
+  }
+
+  if (latest.release_sequence < installed.releaseSequence) {
+    throw new Error('Runtime release downgrade is blocked')
+  }
+  if (latest.release_sequence === installed.releaseSequence) {
+    if (latest.source_sha !== installed.pinnedCommit || latest.sha256 !== installed.artifactSha256) {
+      throw new Error('Runtime release identity conflicts with the installed release')
+    }
+    if (latest.setup && (installed.setupSourceSha !== latest.setup.sourceSha
+      || installed.setupSha256 !== latest.setup.sha256 || !installedSetupCurrent)) {
+      return 'available'
+    }
+    return 'current'
+  }
+  return 'available'
+}
+
+function isPinnedCommit(commit) {
+  return typeof commit === 'string' && STAMP_COMMIT_RE.test(commit) && !FALLBACK_COMMIT_RE.test(commit)
+}
+
+type ExecGitFn = (args: string[], cwd: string) => string
+type ResolveHeadFn = (activeRoot: string | null | undefined) => string | null
+
+/**
+ * Read HEAD from a managed checkout. Used after bootstrap so fallback
+ * (all-zero) install stamps still produce a marker that
+ * isBootstrapComplete() accepts (pinnedCommit length >= 7).
+ */
+function resolveCheckoutHead(activeRoot: string | null | undefined, opts: { execGit?: ExecGitFn } = {}): string | null {
+  if (!activeRoot) {
+    return null
+  }
+
+  const run: ExecGitFn =
+    opts.execGit ||
+    ((args, cwd) =>
+      execFileSync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 15_000,
+        ...hiddenWindowsChildOptions()
+      }).trim())
+
+  try {
+    const sha = run(['-c', 'windows.appendAtomically=false', 'rev-parse', 'HEAD'], activeRoot)
+
+    return isPinnedCommit(sha) ? sha : null
+  } catch {
+    return null
+  }
+}
+
+/** Prefer a real pin already written by install.ps1's bootstrap-marker stage. */
+function readExistingPinnedCommit(activeRoot: string | null | undefined): string | null {
+  if (!activeRoot) {
+    return null
+  }
+
+  try {
+    const raw = fs.readFileSync(path.join(activeRoot, '.youtab-agent-runtime-bootstrap-complete'), 'utf8')
+    const parsed = JSON.parse(raw)
+
+    return parsed && isPinnedCommit(parsed.pinnedCommit) ? parsed.pinnedCommit : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Pick the commit to store on the bootstrap-complete marker.
+ * Packaged fallback stamps must NOT win (all-zero is not a real pin); after a
+ * successful install the checkout's HEAD (or install.ps1's marker) does.
+ */
+function resolveMarkerPinnedCommit(
+  installStamp: { commit?: string; branch?: string | null } | null | undefined,
+  activeRoot: string | null | undefined,
+  opts: { resolveHead?: ResolveHeadFn } = {}
+): string | null {
+  const resolveHead = opts.resolveHead || resolveCheckoutHead
+
+  if (installStamp && isPinnedCommit(installStamp.commit)) {
+    return installStamp.commit
+  }
+
+  const head = resolveHead(activeRoot)
+
+  if (head) {
+    return head
+  }
+
+  return readExistingPinnedCommit(activeRoot)
+}
+
+/**
+ * Map an install stamp to the GitHub ref used to fetch install.ps1/sh.
+ * Real CI/git stamps pin an immutable SHA. Non-git fallback stamps carry an
+ * all-zero placeholder -- treat those as an unpinned branch ref so bootstrap
+ * never asks GitHub for commit 0000000... (#50823).
+ */
+function installRefForStamp(installStamp) {
+  if (installStamp && isPinnedCommit(installStamp.commit)) {
+    return {
+      ref: installStamp.commit,
+      cacheKey: installStamp.commit,
+      pinned: true
+    }
+  }
+
+  if (installStamp && typeof installStamp.commit === 'string' && FALLBACK_COMMIT_RE.test(installStamp.commit)) {
+    const ref = installStamp.branch || FALLBACK_BRANCH
+
+    return {
+      ref,
+      cacheKey: `fallback-${String(ref).replace(/[^0-9A-Za-z._-]/g, '_')}`,
+      pinned: false
+    }
+  }
+
+  return null
+}
+
+// Stages flagged needs_user_input=true in the manifest are skipped by the
+// runner (passed -NonInteractive to install.ps1, which the install script
+// itself handles by emitting skipped=true frames). The renderer / 1E onboarding
+// overlay takes over for those concerns (API keys, model, persona, gateway).
+// We let install.ps1's own -NonInteractive logic drive this rather than
+// filtering client-side -- single source of truth.
+
+// ---------------------------------------------------------------------------
+// install.ps1 source resolution
+// ---------------------------------------------------------------------------
+
+function installScriptName() {
+  return process.platform === 'win32' ? 'install.ps1' : 'install.sh'
+}
+
+function installScriptKind() {
+  return process.platform === 'win32' ? 'powershell' : 'posix'
+}
+
+function resolveLocalInstallScript(sourceRepoRoot) {
+  if (!sourceRepoRoot) {
+    return null
+  }
+
+  const candidate = path.join(sourceRepoRoot, 'scripts', installScriptName())
+
+  try {
+    fs.accessSync(candidate, fs.constants.R_OK)
+
+    return candidate
+  } catch {
+    return null
+  }
+}
+
+function bootstrapCacheDir(youtabHome) {
+  return path.join(youtabHome, 'bootstrap-cache')
+}
+
+// The install.sh / install.ps1 that ships inside the already-installed agent
+// checkout under ~/.youtab-agent-runtime/youtab-agent-runtime. Used as a last-resort fallback when
+// the pinned commit can't be fetched from GitHub (e.g. a locally-built desktop
+// app stamped to an unpushed HEAD).
+function installedAgentInstallScript(youtabHome) {
+  if (!youtabHome) {
+    return null
+  }
+
+  const candidate = path.join(youtabHome, 'youtab-agent-runtime', 'scripts', installScriptName())
+
+  try {
+    fs.accessSync(candidate, fs.constants.R_OK)
+
+    return candidate
+  } catch {
+    return null
+  }
+}
+
+function hasExistingGitCheckout(activeRoot) {
+  if (!activeRoot) {
+    return false
+  }
+
+  try {
+    return fs.existsSync(path.join(activeRoot, '.git'))
+  } catch {
+    return false
+  }
+}
+
+function cachedScriptPath(youtabHome, commit) {
+  return path.join(bootstrapCacheDir(youtabHome), `install-${commit}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
+}
+
+function downloadInstallScript(ref, destPath) {
+  // Fetch from GitHub raw at the install ref. Normal production builds pass a
+  // pinned SHA (immutable). Non-git fallback builds pass an unpinned branch
+  // ref so local builds can still bootstrap without pretending the all-zero
+  // placeholder is a real GitHub commit.
+  const scriptName = installScriptName()
+  const url = `https://raw.githubusercontent.com/eimanghazaei/Youtab-Agent-Runtime/${ref}/scripts/${scriptName}`
+
+  return new Promise((resolve, reject) => {
+    fs.mkdirSync(path.dirname(destPath), { recursive: true })
+    const tmpPath = destPath + '.tmp'
+    const out = fs.createWriteStream(tmpPath)
+    https
+      .get(url, res => {
+        if (res.statusCode === 301 || res.statusCode === 302) {
+          // GitHub raw shouldn't redirect for a SHA URL, but follow once
+          // defensively.
+          out.close()
+          fs.unlinkSync(tmpPath)
+          https
+            .get(res.headers.location, res2 => {
+              if (res2.statusCode !== 200) {
+                reject(
+                  new Error(
+                    `Failed to download ${scriptName}: HTTP ${res2.statusCode} from redirect ${res.headers.location}`
+                  )
+                )
+
+                return
+              }
+
+              const out2 = fs.createWriteStream(tmpPath)
+              res2.pipe(out2)
+              out2.on('finish', () => {
+                out2.close()
+                fs.renameSync(tmpPath, destPath)
+                resolve(destPath)
+              })
+              out2.on('error', reject)
+            })
+            .on('error', reject)
+
+          return
+        }
+
+        if (res.statusCode !== 200) {
+          out.close()
+
+          try {
+            fs.unlinkSync(tmpPath)
+          } catch {
+            void 0
+          }
+
+          reject(new Error(`Failed to download ${scriptName}: HTTP ${res.statusCode} from ${url}`))
+
+          return
+        }
+
+        res.pipe(out)
+        out.on('finish', () => {
+          out.close()
+          fs.renameSync(tmpPath, destPath)
+          resolve(destPath)
+        })
+        out.on('error', err => {
+          try {
+            fs.unlinkSync(tmpPath)
+          } catch {
+            void 0
+          }
+
+          reject(err)
+        })
+      })
+      .on('error', err => {
+        try {
+          fs.unlinkSync(tmpPath)
+        } catch {
+          void 0
+        }
+
+        reject(err)
+      })
+  })
+}
+
+async function resolveInstallScript({
+  installStamp,
+  sourceRepoRoot,
+  youtabHome,
+  emit,
+  customerMode = false,
+  _download = downloadInstallScript
+}) {
+  if (customerMode) {
+    throw new Error('Packaged customer recovery requires the staged Youtab Setup; install script download is disabled')
+  }
+  // 1. Dev shortcut: prefer a local checkout's installer so we can iterate
+  //    without pushing. SOURCE_REPO_ROOT comes from main.ts (path.resolve
+  //    of APP_ROOT/../..).
+  const localScript = resolveLocalInstallScript(sourceRepoRoot)
+
+  if (localScript) {
+    emit({ type: 'log', line: `[bootstrap] using local ${installScriptName()} at ${localScript}` })
+
+    return { path: localScript, source: 'local', kind: installScriptKind() }
+  }
+
+  // 2. Packaged path: download from GitHub at the install stamp's ref.
+  // Non-git fallback builds carry an all-zero commit; treat that as an
+  // unpinned branch ref instead of trying to fetch a non-existent SHA.
+  const installRef = installRefForStamp(installStamp)
+
+  if (!installRef) {
+    throw new Error(
+      `Cannot resolve ${installScriptName()}: no SOURCE_REPO_ROOT and no install stamp. ` +
+        'This packaged build was produced without a valid build-time stamp.'
+    )
+  }
+
+  const cached = cachedScriptPath(youtabHome, installRef.cacheKey)
+  const resolvedCommit = installRef.pinned ? installRef.ref : null
+
+  try {
+    await fsp.access(cached, fs.constants.R_OK)
+    emit({
+      type: 'log',
+      line: `[bootstrap] using cached ${installScriptName()} for ${installRef.ref.slice(0, 12)}`
+    })
+
+    return { path: cached, source: 'cache', commit: resolvedCommit, kind: installScriptKind() }
+  } catch {
+    // not cached; download
+  }
+
+  emit({
+    type: 'log',
+    line:
+      `[bootstrap] fetching ${installScriptName()} for ${installRef.ref.slice(0, 12)} from GitHub` +
+      (installRef.pinned ? '' : ' (fallback, unpinned)')
+  })
+
+  try {
+    await _download(installRef.ref, cached)
+    emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
+
+    return { path: cached, source: 'download', commit: resolvedCommit, kind: installScriptKind() }
+  } catch (err) {
+    // The pinned commit may not be fetchable from GitHub -- most commonly a
+    // locally-built desktop app stamped to an unpushed HEAD (see
+    // write-build-stamp.mjs fromLocalGit). Fall back to the installer that
+    // ships inside the already-installed agent checkout so dev/self-builds can
+    // still bootstrap instead of dying with a fatal 404.
+    const installed = installedAgentInstallScript(youtabHome)
+
+    if (installed) {
+      emit({
+        type: 'log',
+        line:
+          `[bootstrap] GitHub fetch failed (${err.message}); ` +
+          `falling back to installed agent ${installScriptName()} at ${installed}`
+      })
+
+      try {
+        fs.mkdirSync(path.dirname(cached), { recursive: true })
+        fs.copyFileSync(installed, cached)
+
+        return { path: cached, source: 'installed-agent', commit: resolvedCommit, kind: installScriptKind() }
+      } catch {
+        // Cache copy failed (read-only FS, etc.) -- use the source path directly.
+        return { path: installed, source: 'installed-agent', commit: resolvedCommit, kind: installScriptKind() }
+      }
+    }
+
+    throw err
+  }
+}
+
+// ---------------------------------------------------------------------------
+// powershell wrapper
+// ---------------------------------------------------------------------------
+
+// Canonical PowerShell 5.1 location under a Windows root (%SystemRoot%).
+function powershellUnderRoot(root) {
+  return path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+}
+
+// Resolve the PowerShell interpreter to spawn.
+//
+// Spawning bare 'powershell.exe' trusts PATH to contain
+// %SystemRoot%\System32\WindowsPowerShell\v1.0. On machines whose PATH was
+// trimmed, truncated, or stored as a non-expanding REG_SZ (so %SystemRoot%
+// never expands), that lookup fails and the spawn dies with ENOENT before
+// install.ps1 ever runs — the installer stalls at "0 of 0 steps". Resolve by
+// absolute path first, then fall back to PATH (powershell 5.1, then pwsh 7),
+// then a bare name as a last resort.
+function resolveWindowsPowerShell() {
+  for (const v of ['SystemRoot', 'windir']) {
+    const root = process.env[v]
+
+    if (root) {
+      const candidate = powershellUnderRoot(root)
+
+      try {
+        if (fs.statSync(candidate).isFile()) {
+          return candidate
+        }
+      } catch {
+        void 0
+      }
+    }
+  }
+
+  const pathDirs = (process.env.PATH || process.env.Path || '').split(path.delimiter).filter(Boolean)
+
+  for (const exe of ['powershell.exe', 'pwsh.exe']) {
+    for (const dir of pathDirs) {
+      const candidate = path.join(dir, exe)
+
+      try {
+        if (fs.statSync(candidate).isFile()) {
+          return candidate
+        }
+      } catch {
+        void 0
+      }
+    }
+  }
+
+  return 'powershell.exe'
+}
+
+function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, youtabHome }: any = {}) {
+  return new Promise<any>((resolve, reject) => {
+    const ps = process.platform === 'win32' ? resolveWindowsPowerShell() : 'pwsh'
+    const fullArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args]
+
+    const child = spawn(
+      ps,
+      fullArgs,
+      hiddenWindowsChildOptions({
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          // Pass YOUTAB_AGENT_HOME through so install.ps1 respects the caller's
+          // choice rather than re-computing the default.
+          YOUTAB_AGENT_HOME: youtabHome || process.env.YOUTAB_AGENT_HOME || ''
+        }
+      })
+    )
+
+    let stdout = ''
+    let stderr = ''
+    let killed = false
+
+    const onAbort = () => {
+      killed = true
+
+      try {
+        child.kill('SIGTERM')
+      } catch {
+        void 0
+      }
+    }
+
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        onAbort()
+      } else {
+        abortSignal.addEventListener('abort', onAbort, { once: true })
+      }
+    }
+
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+
+    // Stream stdout line-by-line so the renderer sees progress in real time.
+    let stdoutBuf = ''
+    child.stdout.on('data', chunk => {
+      stdout += chunk
+      stdoutBuf += chunk
+      let nl
+
+      while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
+        const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
+        stdoutBuf = stdoutBuf.slice(nl + 1)
+
+        if (line) {
+          emit && emit({ type: 'log', stage: stageName, line, stream: 'stdout' })
+        }
+      }
+    })
+
+    let stderrBuf = ''
+    child.stderr.on('data', chunk => {
+      stderr += chunk
+      stderrBuf += chunk
+      let nl
+
+      while ((nl = stderrBuf.indexOf('\n')) !== -1) {
+        const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
+        stderrBuf = stderrBuf.slice(nl + 1)
+
+        if (line) {
+          emit && emit({ type: 'log', stage: stageName, line, stream: 'stderr' })
+        }
+      }
+    })
+
+    child.on('error', err => {
+      if (abortSignal) {
+        abortSignal.removeEventListener('abort', onAbort)
+      }
+
+      reject(err)
+    })
+
+    child.on('close', (code, signal) => {
+      if (abortSignal) {
+        abortSignal.removeEventListener('abort', onAbort)
+      }
+
+      // Flush any trailing bytes
+      if (stdoutBuf) {
+        emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' } as any)
+      }
+
+      if (stderrBuf) {
+        emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' } as any)
+      }
+
+      resolve({ stdout, stderr, code, signal, killed } as any)
+    })
+  })
+}
+
+function spawnBash(scriptPath, args, { emit, stageName, abortSignal, youtabHome }: any = {}) {
+  return new Promise<any>((resolve, reject) => {
+    const child = spawn('bash', [scriptPath, ...args], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        YOUTAB_AGENT_HOME: youtabHome || process.env.YOUTAB_AGENT_HOME || ''
+      }
+    })
+
+    let stdout = ''
+    let stderr = ''
+    let killed = false
+
+    const onAbort = () => {
+      killed = true
+
+      try {
+        child.kill('SIGTERM')
+      } catch {
+        void 0
+      }
+    }
+
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        onAbort()
+      } else {
+        abortSignal.addEventListener('abort', onAbort, { once: true })
+      }
+    }
+
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+
+    let stdoutBuf = ''
+    child.stdout.on('data', chunk => {
+      stdout += chunk
+      stdoutBuf += chunk
+      let nl
+
+      while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
+        const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
+        stdoutBuf = stdoutBuf.slice(nl + 1)
+
+        if (line) {
+          emit && emit({ type: 'log', stage: stageName, line, stream: 'stdout' })
+        }
+      }
+    })
+
+    let stderrBuf = ''
+    child.stderr.on('data', chunk => {
+      stderr += chunk
+      stderrBuf += chunk
+      let nl
+
+      while ((nl = stderrBuf.indexOf('\n')) !== -1) {
+        const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
+        stderrBuf = stderrBuf.slice(nl + 1)
+
+        if (line) {
+          emit && emit({ type: 'log', stage: stageName, line, stream: 'stderr' })
+        }
+      }
+    })
+
+    child.on('error', err => {
+      if (abortSignal) {
+        abortSignal.removeEventListener('abort', onAbort)
+      }
+
+      reject(err)
+    })
+
+    child.on('close', (code, signal) => {
+      if (abortSignal) {
+        abortSignal.removeEventListener('abort', onAbort)
+      }
+
+      if (stdoutBuf) {
+        emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' })
+      }
+
+      if (stderrBuf) {
+        emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' })
+      }
+
+      resolve({ stdout, stderr, code, signal, killed })
+    })
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Manifest + stage dispatch
+// ---------------------------------------------------------------------------
+
+// Build the installer branch/pin args from the install stamp. The commit pin
+// is fresh-install only: once a managed checkout already exists, bootstrap is
+// a repair/update path and must not let an old packaged app detach the checkout
+// back to the commit baked into that app. All-zero fallback stamps are never
+// passed as -Commit/--commit — only the branch is used (#50823 / #50864 review).
+function buildPinArgs(installStamp, { pinCommit = true } = {}) {
+  const args = []
+
+  if (pinCommit && installStamp && isPinnedCommit(installStamp.commit)) {
+    args.push('-Commit', installStamp.commit)
+  }
+
+  if (installStamp && installStamp.branch) {
+    args.push('-Branch', installStamp.branch)
+  }
+
+  return args
+}
+
+function buildPosixPinArgs({ installStamp, activeRoot, youtabHome, pinCommit = true }) {
+  const args = ['--dir', activeRoot, '--youtab-home', youtabHome]
+
+  if (installStamp && installStamp.branch) {
+    args.push('--branch', installStamp.branch)
+  }
+
+  if (pinCommit && installStamp && isPinnedCommit(installStamp.commit)) {
+    args.push('--commit', installStamp.commit)
+  }
+
+  return args
+}
+
+async function fetchManifest({ scriptPath, installerKind, emit, youtabHome, activeRoot, installStamp, pinCommit }) {
+  const isPosix = installerKind === 'posix'
+
+  const args = isPosix
+    ? ['--manifest', ...buildPosixPinArgs({ installStamp, activeRoot, youtabHome, pinCommit })]
+    : ['-Manifest', ...buildPinArgs(installStamp, { pinCommit })]
+
+  const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
+    emit,
+    stageName: '__manifest__',
+    youtabHome
+  })
+
+  if (result.code !== 0) {
+    throw new Error(
+      `${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${result.stderr || result.stdout}`
+    )
+  }
+
+  // The manifest is the LAST JSON line on stdout (install.ps1 may print
+  // banner / info lines first depending on Console.OutputEncoding effects).
+  // Find the last line that parses as JSON with a `stages` field.
+  const lines = result.stdout.split(/\r?\n/).filter(Boolean)
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(lines[i])
+
+      if (parsed && Array.isArray(parsed.stages)) {
+        return parsed
+      }
+    } catch {
+      void 0
+    }
+  }
+
+  throw new Error(
+    `${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} produced no parseable JSON payload\n${result.stdout}`
+  )
+}
+
+// Parse the JSON result frame from a stage run. The protocol guarantees
+// exactly one JSON line per stage in -Json or -Stage mode (post #27224 fix
+// for the double-emit bug we addressed in the install.ps1 PR).
+function parseStageResult(stdout) {
+  const lines = stdout.split(/\r?\n/).filter(Boolean)
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(lines[i])
+
+      if (parsed && typeof parsed.ok === 'boolean' && typeof parsed.stage === 'string') {
+        return parsed
+      }
+    } catch {
+      void 0
+    }
+  }
+
+  return null
+}
+
+async function runStage({
+  scriptPath,
+  installerKind,
+  stage,
+  emit,
+  youtabHome,
+  activeRoot,
+  abortSignal,
+  installStamp,
+  pinCommit
+}) {
+  const startedAt = Date.now()
+  emit({ type: 'stage', name: stage.name, state: 'running' })
+
+  const isPosix = installerKind === 'posix'
+
+  const args = isPosix
+    ? [
+        '--stage',
+        stage.name,
+        '--non-interactive',
+        '--json',
+        ...buildPosixPinArgs({ installStamp, activeRoot, youtabHome, pinCommit })
+      ]
+    : ['-Stage', stage.name, '-NonInteractive', '-Json', ...buildPinArgs(installStamp, { pinCommit })]
+
+  const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
+    emit,
+    stageName: stage.name,
+    abortSignal,
+    youtabHome
+  })
+
+  const durationMs = Date.now() - startedAt
+
+  if (result.killed) {
+    const ev = { type: 'stage', name: stage.name, state: 'failed', durationMs, error: 'cancelled by user' }
+    emit(ev)
+
+    return ev
+  }
+
+  const json = parseStageResult(result.stdout)
+
+  if (!json) {
+    const ev = {
+      type: 'stage',
+      name: stage.name,
+      state: 'failed',
+      durationMs,
+      error: `${isPosix ? 'install.sh --stage' : 'install.ps1 -Stage'} ${stage.name} produced no JSON result frame (exit=${result.code})`,
+      json: null
+    }
+
+    emit(ev)
+
+    return ev
+  }
+
+  if (json.ok && json.skipped) {
+    const ev = { type: 'stage', name: stage.name, state: 'skipped', durationMs, json }
+    emit(ev)
+
+    return ev
+  }
+
+  if (json.ok) {
+    const ev = { type: 'stage', name: stage.name, state: 'succeeded', durationMs, json }
+    emit(ev)
+
+    return ev
+  }
+
+  const ev = {
+    type: 'stage',
+    name: stage.name,
+    state: 'failed',
+    durationMs,
+    json,
+    error: json.reason || `exit code ${result.code}`
+  }
+
+  emit(ev)
+
+  return ev
+}
+
+// ---------------------------------------------------------------------------
+// Per-run log file
+// ---------------------------------------------------------------------------
+
+function openRunLog(logRoot) {
+  fs.mkdirSync(logRoot, { recursive: true })
+  const ts = new Date().toISOString().replace(/[:.]/g, '-')
+  const logPath = path.join(logRoot, `bootstrap-${ts}.log`)
+  const stream = fs.createWriteStream(logPath, { flags: 'a' })
+
+  return { path: logPath, stream }
+}
+
+// ---------------------------------------------------------------------------
+// Public entrypoint
+// ---------------------------------------------------------------------------
+
+async function runBootstrap(opts) {
+  const {
+    installStamp,
+    activeRoot,
+    sourceRepoRoot,
+    youtabHome,
+    logRoot,
+    onEvent,
+    abortSignal,
+    customerMode = false,
+    writeMarker // callback to write the bootstrap-complete marker; main.ts provides
+  } = opts
+
+  // Bail before spawning anything if the user already cancelled — otherwise an
+  // already-aborted signal would still fetch the manifest (a spawn) before the
+  // in-loop abort check fires.
+  if (abortSignal && abortSignal.aborted) {
+    if (typeof onEvent === 'function') {
+      try {
+        onEvent({ type: 'failed', error: 'bootstrap cancelled by user' })
+      } catch {
+        void 0
+      }
+    }
+
+    return { ok: false, cancelled: true }
+  }
+
+  const runLog = openRunLog(logRoot || path.join(youtabHome, 'logs'))
+
+  // Tee every event to the runLog AND the caller's onEvent. This gives us a
+  // forensic trail per bootstrap run AND lets the renderer subscribe live.
+  const emit = ev => {
+    try {
+      runLog.stream.write(JSON.stringify(ev) + '\n')
+    } catch {
+      void 0
+    }
+
+    try {
+      if (typeof onEvent === 'function') {
+        onEvent(ev)
+      }
+    } catch (err) {
+      // Don't let a subscriber bug crash the bootstrap
+      runLog.stream.write(`emit error: ${err && err.message}\n`)
+    }
+  }
+
+  emit({
+    type: 'log',
+    line:
+      `[bootstrap] starting at ${new Date().toISOString()}; ` +
+      `activeRoot=${activeRoot}; ` +
+      `stamp=${installStamp ? installStamp.commit.slice(0, 12) : '<none>'}; ` +
+      `runLog=${runLog.path}`
+  })
+
+  try {
+    const existingCheckout = hasExistingGitCheckout(activeRoot)
+    const pinCommit = !existingCheckout
+
+    if (existingCheckout && installStamp && installStamp.commit) {
+      emit({
+        type: 'log',
+        line:
+          `[bootstrap] existing checkout detected at ${activeRoot}; ` +
+          `not pinning to packaged install stamp ${installStamp.commit.slice(0, 12)}`
+      })
+    }
+
+    // 1. Resolve the platform installer.
+    const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, youtabHome, emit, customerMode })
+    const installerKind = scriptInfo.kind || 'powershell'
+
+    // 2. Fetch manifest
+    const manifest = await fetchManifest({
+      scriptPath: scriptInfo.path,
+      installerKind,
+      emit,
+      youtabHome,
+      activeRoot,
+      installStamp,
+      pinCommit
+    })
+
+    emit({
+      type: 'manifest',
+      stages: manifest.stages,
+      protocolVersion: manifest.protocol_version || manifest.protocolVersion || null
+    })
+
+    // 3. Iterate stages in order. Stages flagged needs_user_input are still
+    //    invoked -- install.ps1's own -NonInteractive handler in those stages
+    //    emits skipped=true. We trust the protocol rather than filtering
+    //    client-side.
+    for (const stage of manifest.stages) {
+      if (abortSignal && abortSignal.aborted) {
+        emit({ type: 'failed', error: 'bootstrap cancelled by user' })
+
+        return { ok: false, cancelled: true }
+      }
+
+      const ev = await runStage({
+        scriptPath: scriptInfo.path,
+        installerKind,
+        stage,
+        emit,
+        youtabHome,
+        activeRoot,
+        abortSignal,
+        installStamp,
+        pinCommit
+      })
+
+      if (ev.state === 'failed') {
+        emit({ type: 'failed', stage: stage.name, error: (ev as any).error || 'stage failed' })
+
+        return { ok: false, failedStage: stage.name, error: (ev as any).error }
+      }
+    }
+
+    // 4. Write the bootstrap-complete marker. Fallback (all-zero) stamps are
+    // not real pins -- resolve HEAD from the checkout we just installed so
+    // isBootstrapComplete() (pinnedCommit.length >= 7) accepts the marker
+    // instead of re-running bootstrap on every launch (#50823 review).
+    const pinnedCommit = resolveMarkerPinnedCommit(installStamp, activeRoot)
+
+    if (!pinnedCommit) {
+      emit({
+        type: 'log',
+        line:
+          '[bootstrap] WARNING: could not resolve a real pinnedCommit for the ' +
+          'bootstrap-complete marker; subsequent launches may re-run bootstrap'
+      })
+    } else if (installStamp && !isPinnedCommit(installStamp.commit)) {
+      emit({
+        type: 'log',
+        line: `[bootstrap] fallback stamp resolved marker pin to ${pinnedCommit.slice(0, 12)} from checkout`
+      })
+    }
+
+    const markerPayload = {
+      pinnedCommit,
+      pinnedBranch: installStamp ? installStamp.branch : null
+    }
+
+    const marker = typeof writeMarker === 'function' ? writeMarker(markerPayload) : markerPayload
+    emit({ type: 'complete', marker })
+
+    return { ok: true, marker }
+  } catch (err) {
+    emit({ type: 'failed', error: err.message || String(err) })
+
+    return { ok: false, error: err.message || String(err) }
+  } finally {
+    try {
+      runLog.stream.end()
+    } catch {
+      void 0
+    }
+  }
+}
+
+export {
+  buildPinArgs,
+  buildPosixPinArgs,
+  cachedScriptPath,
+  classifyPilotReleaseUpdate,
+  fetchApprovedPilotRelease,
+  hasExistingGitCheckout,
+  hasPendingRuntimeInstall,
+  installedAgentInstallScript,
+  installRefForStamp,
+  isPackagedWindowsCustomerMode,
+  isPinnedCommit,
+  // Exposed for testability
+  parseStageResult,
+  pendingRuntimeInstallMarker,
+  pilotReleaseBaseUrl,
+  resolveCheckoutHead,
+  resolveInstallScript,
+  resolveLocalInstallScript,
+  resolveMarkerPinnedCommit,
+  runBootstrap,
+  trustedPilotReleaseBaseUrl
+}

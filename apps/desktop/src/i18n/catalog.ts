@@ -1,0 +1,18 @@
+import { ar } from './ar'
+import { en } from './en'
+import { fa } from './fa'
+import { ja } from './ja'
+import { nl } from './nl'
+import type { Locale, Translations } from './types'
+import { zh } from './zh'
+import { zhHant } from './zh-hant'
+
+export const TRANSLATIONS: Record<Locale, Translations> = {
+  en,
+  zh,
+  'zh-hant': zhHant,
+  ja,
+  ar,
+  nl,
+  fa
+}

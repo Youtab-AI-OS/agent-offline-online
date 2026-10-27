@@ -1,0 +1,274 @@
+.DS_Store
+/venv/
+/venv.old/
+/venv.stale.runtime-*/
+/.youtab/agent-runtime-runtime/
+/_pycache/
+*.pyc*
+__pycache__/
+act/
+.act-sandbox-agent.*
+.venv/
+.venv
+.vscode/
+# Agent scaffolding: local settings, session state and the nested worktrees an
+# agent checks out to work in parallel. It is tooling for whoever is driving
+# the checkout, not part of the product, and the worktrees under it are whole
+# second copies of the repository.
+.claude/
+.env
+.op.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.development
+.env.test
+.youtab/agent-runtime-docker/
+.notebooklm-home/
+.notebooklm-cli-venv/
+.notebooklm-playwright/
+.pip-cache/
+.uv-cache/
+compose.youtab/agent-runtime.local.yml
+export*
+__pycache__/model_tools.cpython-310.pyc
+__pycache__/web_tools.cpython-310.pyc
+logs/
+data/
+.pytest_cache/
+test_durations.json
+.pytest-cache/
+tmp/
+temp_vision_images/
+youtab-*/*
+examples/
+tests/quick_test_dataset.jsonl
+tests/sample_dataset.jsonl
+run_datagen_kimik2-thinking.sh
+run_datagen_megascience_glm4-6.sh
+run_datagen_sonnet.sh
+source-data/*
+run_datagen_megascience_glm4-6.sh
+data/*
+# No trailing slash: also matches node_modules SYMLINKS (worktrees often
+# symlink node_modules to the main checkout; the dir-only pattern let one
+# slip into a commit and break `npm ci` on CI with ENOTDIR).
+node_modules
+browser-use/
+agent-browser/
+# Private keys
+*.ppk
+*.pem
+privvy*
+images/
+__pycache__/
+youtab_agent_runtime.egg-info/
+wandb/
+testlogs
+playwright-report/
+test-results/
+# Playwright visual regression baselines — cached from main in CI, not committed
+*-snapshots/
+
+# CLI config (may contain sensitive SSH paths)
+cli-config.yaml
+
+# Skills Hub state (lives in ~/.youtab/agent-runtime/skills/.hub/ at runtime, but just in case)
+skills/.hub/
+ignored/
+.worktrees/
+environments/benchmarks/evals/
+
+# Web UI build output
+youtab_agent_cli/web_dist/
+# Cross-process web UI build lock (flock target, always empty)
+.web_ui_build.lock
+apps/desktop/build/
+apps/desktop/dist/
+
+# tsc-emitted artifacts (a stray `tsc -b` compiles into src/, and vite then
+# resolves the stale .js OVER the .tsx — never track these)
+apps/desktop/src/**/*.js
+apps/desktop/src/**/*.js.map
+apps/desktop/src/**/*.d.ts
+!apps/desktop/src/global.d.ts
+!apps/desktop/src/vite-env.d.ts
+apps/shared/src/**/*.js
+apps/shared/src/**/*.js.map
+apps/shared/src/**/*.d.ts
+apps/desktop/release/
+*.tsbuildinfo
+
+# Web UI assets — synced from @youtab/ui at build time via
+# `npm run sync-assets` (see web/package.json).
+web/public/fonts/
+web/public/ds-assets/
+
+# Release script temp files
+.release_notes.md
+mini-swe-agent/
+
+# Nix
+.direnv/
+.nix-stamps/
+result
+website/static/api/skills-index.json
+# skills.json + skills-meta.json are build artifacts emitted by
+# website/scripts/extract-skills.py during prebuild — keep them out of
+# git for the same reason as skills-index.json (large, generated, change
+# every build).
+website/static/api/skills.json
+website/static/api/skills-meta.json
+# automation-blueprints-index.json is a build artifact emitted by
+# website/scripts/extract-automation-blueprints.py during prebuild.
+website/static/api/automation-blueprints-index.json
+models-dev-upstream/
+
+# Local editor / agent tooling (machine-specific; keep in global config, not the repo)
+.codex/
+.cursor/
+.gemini/
+.zed/
+.mcp.json
+opencode.json
+config/mcporter.json
+
+youtab_agent_cli/tui_dist/*
+youtab_agent_cli/scripts/
+docs/superpowers/*
+# Local qualification evidence and per-checkout runtime scratch state. The
+# managed user-level runtime home is ~/.youtab-agent-runtime, outside the repo.
+.youtab/
+
+# Desktop/bootstrap install marker written into the managed checkout root by the
+# bootstrap installer. It is Youtab-managed runtime state, never a code change —
+# ignore it so `youtab update`'s `git stash push --include-untracked` does not
+# treat it as a local edit and autostash it on every run (#38529).
+.youtab-agent-runtime-bootstrap-complete
+
+# Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
+.youtab/agent-runtime-sandbox/
+
+# Interrupted-update breadcrumb + recovery lock written next to the shared venv
+# by `youtab update` / launch-time self-heal. Runtime state, never a code change
+# — ignore so `git status` stays clean and update's autostash skips them.
+.update-incomplete
+.update-incomplete.lock
+
+# Checkout fingerprint the __pycache__ tree was last validated against
+# (launch-time stale-bytecode sweep). Runtime state, never a code change.
+.bytecode-fingerprint
+.bytecode-fingerprint.tmp
+
+# Installer-written method stamp in the managed checkout root (scripts/install.sh).
+# Runtime metadata only — never a code change. Ignore so `git status` stays clean
+# and `youtab update`'s untracked autostash does not treat it as a local edit (#66189 / #54855).
+/.install_method
+
+# Tool Search live-test harness output — non-deterministic model transcripts,
+# regenerated by scripts/tool_search_livetest.py. Never an artifact of the repo.
+scripts/out/
+
+# Per-release changelog drafts. These exist only transiently during a release
+# cut (passed to `gh release create --notes-file`); the GitHub Release itself
+# stores the published notes. They are not a build artifact and must never be
+# committed to the repo root. See the youtab-release skill.
+RELEASE_v*.md
+
+# Desktop demo-run scratch output (youtab writes demo/*.txt during recorded
+# walkthroughs). Throwaway artifacts, never part of the app.
+apps/desktop/demo/
+
+# PR infographics are rendered locally and embedded in PR descriptions via the
+# image-provider (fal.media) URL — they are NEVER committed to the repo. The
+# PR body is the archive. See the youtab-agent-runtime-dev skill's
+# pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
+#
+# Spelling variants are listed because a single `infographic/` pattern was
+# sidestepped by an `infograficos/` directory (#70552). .gitignore is only
+# the first line of defence and cannot stop `git add -f` at all — the
+# infographic-check CI job is what actually enforces this.
+infographic/
+infographics/
+infograficos/
+infografico/
+native/fts5_cjk/*.so
+# Runtime marker written by youtab update when a lazy dependency refresh is
+# interrupted; consumed by launch-time recovery. Never commit it (was tracked
+# by accident via 3a69e34702, removed in the #72002 salvage).
+.lazy-refresh-incomplete
+
+# Historical intake and review artifacts are kept outside product history.
+/.plans/
+/.github/pr-screenshots/
+/apps/desktop/pr-assets/
+/sqlite_leak_fix.png
+
+# Windows pytest litter: tmp_path (C:\Users\...\AppData\Local\Temp\pytest-*) interpolated
+# into a bash command lands in the repo root with the drive colon mangled to U+F03A.
+*AppDataLocalTemppytest-*
+
+# ── Consented human speech, and everything derived from it ───────────────────
+# Qualifying the wake word needs recordings of real people. Those recordings
+# were given for one purpose, on the promise that they stay on local disk: they
+# are never committed, never uploaded, and never leave the machine that captured
+# them. Neither are the feature tensors cut out of them or the transcripts
+# written from them — a mel/embedding tensor is the speech, resampled, and a
+# transcript is what the speaker said.
+#
+# Datasets belong OUTSIDE the checkout entirely (see
+# scripts/wakeword/SPEAKER_RECORDING_PACKAGE.md). These patterns are the second
+# line of defence for the case where one lands inside it anyway.
+#
+# This stops the accident — `git add -A` after a recording session. It cannot
+# stop `git add -f`, exactly as the infographic rule above records. What
+# actually enforces the rule is
+# tests/tools/test_wakeword_no_human_data_committed.py, which fails on any
+# TRACKED file that looks like human audio, a derived tensor or a transcript,
+# and on any tracked text that names a speaker id or a capture root.
+#
+# No `!` exceptions. The artifacts this repository legitimately ships (the 33
+# synthetic fixtures, samples.npz, jo.wav) are already tracked, and ignore rules
+# do not apply to tracked files — so nothing here has to be re-added in normal
+# work. Regenerating the fixture set is the one case that needs `git add -f`,
+# and that is a deliberate act which should be reviewed rather than swept in by
+# a wildcard: a `!.../audio/*.wav` exception would re-admit any stray recording
+# dropped into that directory.
+*.wav
+*.m4a
+*.m4b
+*.mp3
+*.aac
+*.amr
+*.flac
+*.ogg
+*.opus
+*.aiff
+*.aif
+*.caf
+*.wma
+*.3gp
+# Derived feature tensors. openWakeWord features are a lossy but perfectly
+# recognisable encoding of the audio they came from.
+*.npy
+*.npz
+# Speaker directories, whatever they are nested under. E001, E002, E003…
+speaker_E*/
+**/speaker_E*
+# Transcripts and per-take logs of what a speaker said.
+*transcript*.json
+*transcripts*.json
+*.transcript
+# Filled consent records. The blank template
+# (scripts/wakeword/CONSENT_RECORD_TEMPLATE.md) is tracked and does not match
+# this; a filled one carries the speaker's name and contact details, which is
+# the only personal data in the whole workflow.
+consent-record-*
+# Capture roots, if one is ever created inside the checkout by mistake.
+wakeword-human/
+wakeword-build/
+recordings/
+
+# Pinned Microsoft standalone prerequisite fetched and verified on the build machine.
+/apps/bootstrap-installer/src-tauri/assets/MicrosoftEdgeWebView2RuntimeInstallerX64.exe

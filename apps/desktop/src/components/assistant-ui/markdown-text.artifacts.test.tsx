@@ -1,0 +1,104 @@
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { downloadTextFile } from '@/lib/download-text'
+import { artifactsForSession, clearArtifactRegistry } from '@/store/artifacts'
+import { $previewTabs } from '@/store/preview'
+import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+
+import { MarkdownTextContent } from './markdown-text'
+
+vi.mock('@/lib/download-text', () => ({ downloadTextFile: vi.fn() }))
+
+const HTML_DOC = `<!doctype html>
+<html>
+<head><title>Pomodoro Timer</title></head>
+<body>
+<h1>Pomodoro</h1>
+<p>A tiny focus timer that counts down twenty-five minutes.</p>
+<script>let seconds = 25 * 60; setInterval(() => { seconds -= 1 }, 1000)</script>
+</body>
+</html>`
+
+const SMALL_SNIPPET = 'const x = 1'
+
+function fenced(language: string, body: string): string {
+  return `Here you go:\n\n\`\`\`${language}\n${body}\n\`\`\`\n`
+}
+
+// End-to-end for the artifact path: a substantial ```html fence in assistant
+// markdown must come out of preprocessMarkdown -> Streamdown -> SyntaxHighlighter
+// as an artifact card (registered in the store), while small fences keep the
+// plain code-card path.
+describe('MarkdownTextContent artifacts', () => {
+  beforeEach(() => {
+    $activeSessionId.set('session-artifacts')
+    $selectedStoredSessionId.set(null)
+    window.localStorage.clear()
+    clearArtifactRegistry()
+  })
+
+  afterEach(() => {
+    cleanup()
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
+    clearArtifactRegistry()
+    window.localStorage.clear()
+  })
+
+  it('renders a substantial html fence as an artifact card and registers it', async () => {
+    render(<MarkdownTextContent isRunning={false} text={fenced('html', HTML_DOC)} />)
+
+    const card = await screen.findByText('Pomodoro Timer')
+
+    expect(card.closest('button')?.dataset.slot).toBe('aui_artifact-card')
+    expect(artifactsForSession('session-artifacts')).toHaveLength(1)
+    expect(artifactsForSession('session-artifacts')[0]?.kind).toBe('html')
+    // Registration alone must not open the rail (offer, don't hijack).
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('keeps a small fence as a plain code block', async () => {
+    const { container } = render(<MarkdownTextContent isRunning={false} text={fenced('js', SMALL_SNIPPET)} />)
+
+    // The code card mounts synchroyoutably; Shiki may split tokens into spans,
+    // so assert on the card slots rather than text content.
+    expect(container.querySelector('[data-slot="code-card"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="aui_artifact-card"]')).toBeNull()
+    expect(artifactsForSession('session-artifacts')).toHaveLength(0)
+  })
+
+  it('offers an explicit download of the generated content without opening the preview', async () => {
+    render(<MarkdownTextContent isRunning={false} text={fenced('html', HTML_DOC)} />)
+    await screen.findByText('Pomodoro Timer')
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+    expect(downloadTextFile).toHaveBeenCalledWith('Pomodoro-Timer.html', HTML_DOC.trim(), 'text/html', 'download')
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('does not register while the message is still streaming', async () => {
+    render(<MarkdownTextContent isRunning text={fenced('html', HTML_DOC)} />)
+
+    await screen.findByText('Pomodoro Timer')
+
+    expect(artifactsForSession('session-artifacts')).toHaveLength(0)
+  })
+
+  it('offers a visible download for small code without replacing its source', async () => {
+    render(<MarkdownTextContent isRunning={false} text={fenced('js', SMALL_SNIPPET)} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+    expect(downloadTextFile).toHaveBeenCalledWith('code.js', SMALL_SNIPPET, 'text/plain', 'download')
+  })
+
+  it('keeps executable URL schemes blocked', () => {
+    const { container } = render(<MarkdownTextContent isRunning={false} text={'[Unsafe](javascript:alert%281%29)'} />)
+    expect(screen.queryByRole('button', { name: 'Download' })).toBeNull()
+    expect(container.querySelector('a[href^="javascript:"]')).toBeNull()
+  })
+
+  it('exposes the existing PDF file link as a visible download without generating a substitute', async () => {
+    render(<MarkdownTextContent isRunning={false} text={'[Report](file:///C:/Users/Tester/Downloads/report.pdf)'} />)
+    expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy()
+    expect(screen.getByText('report.pdf')).toBeTruthy()
+  })
+})

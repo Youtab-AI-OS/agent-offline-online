@@ -1,0 +1,7 @@
+[
+  "Windows Setup includes the verified Microsoft WebView2 runtime; no separate WebView2 download is required during installation.",
+  "Setup lets you choose an installation location while preserving existing chats, skills and settings.",
+  "Windows Setup and Desktop updates use a matched Runtime and Setup release.",
+  "About > Update shows the changes included before installing the new version.",
+  "Update verifies the release package and keeps the previous installation available for recovery."
+]

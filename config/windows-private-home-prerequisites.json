@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "uv": {
+    "version": "0.12.24",
+    "url": "https://github.com/astral-sh/uv/releases/download/0.12.24/uv-x86_64-pc-windows-msvc.zip",
+    "sha256": "7c38608c8a18ee137d748a1773053b07ec8f3a30fab49aebaa6f4e4efeceb019",
+    "executableSha256": "1e9d1e0a766024a212d165dc67db2d7f71831a5ff4bb60ab7e6863391871c1d5"
+  },
+  "python": {
+    "key": "cpython-3.11.17-windows-x86_64-none",
+    "build": "20261003",
+    "sha256": "861f9a03b0c4ca537da1754ed0556e0628dd2114a1be36e8aae6b1e2bb1304a0",
+    "catalog": {
+      "cpython-3.11.17-windows-x86_64-none": {
+        "name": "cpython",
+        "arch": {
+          "family": "x86_64",
+          "variant": null
+        },
+        "os": "windows",
+        "libc": "none",
+        "major": 3,
+        "minor": 11,
+        "patch": 17,
+        "prerelease": "",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.11.17%2B20261003-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+        "sha256": "861f9a03b0c4ca537da1754ed0556e0628dd2114a1be36e8aae6b1e2bb1304a0",
+        "variant": null,
+        "build": "20261003"
+      }
+    }
+  },
+  "git": {
+    "version": "2.54.0",
+    "url": "https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/PortableGit-2.54.0-64-bit.7z.exe",
+    "size": 58995352,
+    "sha256": "bea006a6cc69673f27b1647e84ab3a68e912fbc175ab6320c5987e012897f311"
+  }
+}

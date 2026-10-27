@@ -1,0 +1,105 @@
+import type { CronJob, CronJobUpdates } from '@/types/youtab'
+
+const asText = (value: unknown): string => (typeof value === 'string' ? value : '')
+
+export function cronParts(expr: string): null | string[] {
+  const parts = expr.trim().replace(/\s+/g, ' ').split(' ')
+
+  return parts.length === 5 ? parts : null
+}
+
+export function cronTime(expr: string): string {
+  const parts = cronParts(expr)
+
+  if (!parts || !/^\d+$/.test(parts[0]) || !/^\d+$/.test(parts[1])) {
+    return ''
+  }
+
+  const [minute, hour] = parts.map(Number)
+
+  return minute <= 59 && hour <= 23
+    ? `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+    : ''
+}
+
+export function withCronTime(expr: string, time: string): string {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(time)
+  const parts = cronParts(expr)
+
+  if (!match || (expr.trim() && !cronTime(expr))) {
+    return expr
+  }
+
+  const recurrence = parts?.slice(2).join(' ') ?? '* * *'
+
+  return `${Number(match[2])} ${Number(match[1])} ${recurrence}`
+}
+
+/** Script-only cron jobs run a shell script on schedule with no LLM prompt. */
+export function jobIsScriptOnly(job: Pick<CronJob, 'no_agent' | 'script'>): boolean {
+  return Boolean(job.no_agent) && Boolean(asText(job.script).trim())
+}
+
+export type CronEditorValidationError = 'prompt' | 'prompt_and_schedule' | 'schedule'
+
+export interface CronEditorValidationInput {
+  prompt: string
+  schedule: string
+  scriptOnlyJob: boolean
+}
+
+export function validateCronEditor(input: CronEditorValidationInput): CronEditorValidationError | null {
+  const trimmedPrompt = input.prompt.trim()
+  const trimmedSchedule = input.schedule.trim()
+
+  if (!trimmedSchedule && !trimmedPrompt && !input.scriptOnlyJob) {
+    return 'prompt_and_schedule'
+  }
+
+  if (!trimmedSchedule) {
+    return 'schedule'
+  }
+
+  if (!input.scriptOnlyJob && !trimmedPrompt) {
+    return 'prompt'
+  }
+
+  return null
+}
+
+export interface CronEditorSaveValues {
+  deliver: string
+  /** Per-job model override ('' = follow the global default at fire time). */
+  model: string
+  name: string
+  prompt: string
+  /** Provider for the model override ('' = none). Always paired with model. */
+  provider: string
+  schedule: string
+}
+
+/** Build the API update payload, preserving an empty prompt on script-only jobs. */
+export function cronEditorUpdates(values: CronEditorSaveValues, options: { scriptOnlyJob: boolean }): CronJobUpdates {
+  const updates: CronJobUpdates = {
+    deliver: values.deliver,
+    name: values.name,
+    schedule: values.schedule.trim()
+  }
+
+  const trimmedPrompt = values.prompt.trim()
+
+  if (!options.scriptOnlyJob || trimmedPrompt) {
+    updates.prompt = trimmedPrompt
+  }
+
+  // Script-only jobs never run an agent, so the scheduler ignores model
+  // overrides — leave whatever is stored untouched. For agent jobs, always
+  // write both axes so resetting to "default" clears a previous pin (the
+  // backend normalizes null/'' to "no override").
+  if (!options.scriptOnlyJob) {
+    updates.model = values.model.trim() || null
+    updates.provider = values.provider.trim() || null
+  }
+
+  return updates
+}
