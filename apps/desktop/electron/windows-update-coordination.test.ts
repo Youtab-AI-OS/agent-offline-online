@@ -20,8 +20,12 @@ const fakeAcquire = (file: string, sha: string, size: number) => {
   if (bytes.length !== size || createHash('sha256').update(bytes).digest('hex') !== sha) {throw new Error('identity')}
   return { close() {} }
 }
-const verifyCoordinationSetup = (file: string, metadata: unknown, source: unknown, developmentOnly = false) =>
-  verifyWithNativeLease(file, metadata, source, developmentOnly, addonPin, fakeAcquire)
+const verifyCoordinationSetup = (file: string, metadata: unknown, source: unknown, developmentOnly = false, storedFile = file) =>
+  verifyWithNativeLease(file, metadata, source, developmentOnly, addonPin,
+    (admittedFile, sha, size) => {
+      assert.equal(admittedFile, file)
+      return fakeAcquire(storedFile, sha, size)
+    })
 const home = 'D:\\owned\\private-home'
 const output = (status: string, reason = status === 'clear' ? 'no-active-update' : status === 'published' ? 'handoff-published' : 'coordination-unavailable') => JSON.stringify({ protocol: 'youtab.update-coordination', version: 1, status, reason })
 function deps(stdout = output('clear')): CoordinationDeps {
@@ -113,17 +117,18 @@ test('PID and timestamp boundaries fail without spawning', async () => {
 test('embedded immutable identity verifies exact stored bytes without invoking Setup', async () => {
   const directory = await fs.mkdtemp(path.join(process.cwd(), '.coordination-identity-'))
   try {
-    const executable = path.join(directory, 'youtab-setup.exe')
+    const storedFile = path.join(directory, 'youtab-setup.exe')
+    const executable = process.platform === 'win32' ? storedFile : `D:\\unit-test\\${path.basename(directory)}\\youtab-setup.exe`
     const image = Buffer.alloc(256, 0x42)
-    await fs.writeFile(executable, image)
+    await fs.writeFile(storedFile, image)
     const identity = { protocol: 1, sourceSha: setup.sourceSha, sha256: createHash('sha256').update(image).digest('hex'), size: image.length }
-    assert.equal((await verifyCoordinationSetup(executable, identity, setup.sourceSha))?.sha256, identity.sha256)
-    assert.equal((await verifyCoordinationSetup(executable, { ...identity, handoffProtocol: 2 }, setup.sourceSha))?.handoffProtocol, 2)
+    assert.equal((await verifyCoordinationSetup(executable, identity, setup.sourceSha, false, storedFile))?.sha256, identity.sha256)
+    assert.equal((await verifyCoordinationSetup(executable, { ...identity, handoffProtocol: 2 }, setup.sourceSha, false, storedFile))?.handoffProtocol, 2)
     for (const candidate of [null, { ...identity, protocol: 0 }, { ...identity, sourceSha: 'c'.repeat(40) }, { ...identity, sha256: 'c'.repeat(64) }, { ...identity, size: image.length + 1 }, { ...identity, extra: true }]) {
-      assert.equal(await verifyCoordinationSetup(executable, candidate, setup.sourceSha), null)
+      assert.equal(await verifyCoordinationSetup(executable, candidate, setup.sourceSha, false, storedFile), null)
     }
-    await fs.writeFile(executable, Buffer.alloc(256, 0x43))
-    assert.equal(await verifyCoordinationSetup(executable, identity, setup.sourceSha), null)
+    await fs.writeFile(storedFile, Buffer.alloc(256, 0x43))
+    assert.equal(await verifyCoordinationSetup(executable, identity, setup.sourceSha, false, storedFile), null)
     assert.equal(await verifyCoordinationSetup(path.join(directory, 'missing.exe'), identity, setup.sourceSha), null)
   } finally {
     assert.equal(path.dirname(directory), process.cwd())
@@ -165,9 +170,10 @@ test('actual owned Node exit2 is parsed as native exclusion, without generic rea
 test('developer route is explicit fixed build resource and cannot enter customer mode', async () => {
   const directory = await fs.mkdtemp(path.join(process.cwd(), '.developer-identity-'))
   try {
-    const executable = path.join(directory, 'Youtab-Setup.exe')
+    const storedFile = path.join(directory, 'Youtab-Setup.exe')
+    const executable = process.platform === 'win32' ? storedFile : `D:\\unit-test\\${path.basename(directory)}\\Youtab-Setup.exe`
     const bytes = Buffer.alloc(256, 0x41)
-    await fs.writeFile(executable, bytes)
+    await fs.writeFile(storedFile, bytes)
     const qualifiedSource = 'c'.repeat(40)
     const identity = { protocol: 1, sourceSha: qualifiedSource, sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length, developmentOnly: true }
     assert.equal(developmentCoordinationExecutable('D:\\private-development', identity), 'D:\\private-development\\build\\update-coordination\\Youtab-Setup.exe')
@@ -175,9 +181,9 @@ test('developer route is explicit fixed build resource and cannot enter customer
     assert.equal(developmentCoordinationExecutable('D:\\private-development', { ...identity, developmentOnly: undefined }), null)
     assert.equal(developmentCoordinationExecutable('D:\\private-development', null), null)
     assert.equal(await verifyCoordinationSetup(executable, identity, qualifiedSource), null, 'customer rejects dev metadata')
-    assert.ok(await verifyCoordinationSetup(executable, identity, qualifiedSource, true))
-    assert.equal(await verifyCoordinationSetup(executable, identity, '0'.repeat(40), true), null, 'dirty/fallback Desktop SHA cannot impersonate helper pin')
-    assert.equal(await verifyCoordinationSetup(executable, { ...identity, extra: true }, qualifiedSource, true), null)
+    assert.ok(await verifyCoordinationSetup(executable, identity, qualifiedSource, true, storedFile))
+    assert.equal(await verifyCoordinationSetup(executable, identity, '0'.repeat(40), true, storedFile), null, 'dirty/fallback Desktop SHA cannot impersonate helper pin')
+    assert.equal(await verifyCoordinationSetup(executable, { ...identity, extra: true }, qualifiedSource, true, storedFile), null)
   } finally {
     assert.equal(path.dirname(directory), process.cwd())
     await fs.rm(directory, { recursive: true })

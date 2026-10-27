@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 const WEBVIEW_STANDALONE: &[u8] = include_bytes!("../assets/MicrosoftEdgeWebView2RuntimeInstallerX64.exe");
 #[cfg(windows)]
 const STANDALONE_SHA256: &str =
-    "2a6add76c37bfa872eb8c2b22d45b3216b8e2a1f193e0774006340ff62ac5fa0";
+    "1c401b327fbc7bb9731b4e350a2194f083cbc3ede46508d52e1cae6610a39bea";
 #[cfg(windows)]
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 #[cfg(windows)]

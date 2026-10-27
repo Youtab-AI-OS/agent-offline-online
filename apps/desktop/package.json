@@ -171,7 +171,7 @@
     "wait-on": "^9.0.5"
   },
   "build": {
-    "electronVersion": "42.11.12",
+    "electronVersion": "42.11.18",
     "appId": "com.youtab.youtab-agent-runtime",
     "productName": "Youtab",
     "executableName": "Youtab",
