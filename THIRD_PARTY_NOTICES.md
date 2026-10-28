@@ -40,3 +40,10 @@ The vendored packages under `packages/youtab-ui*` are adapted from the MIT
 licensed `@nous-research/ui` distributions at versions `0.13.0`, `0.16.0`, and
 `0.18.2`. They are locally namespaced and do not create a runtime dependency on
 the original package registry identity. The MIT terms above apply.
+
+## deepmerge security patch
+
+The vendored package under `vendor/deepmerge` is derived from `deepmerge`
+4.3.1 at upstream commit
+`d0256cde79edba0c8e10a888ac439124318b14ca`. Its MIT license is included in
+that directory.

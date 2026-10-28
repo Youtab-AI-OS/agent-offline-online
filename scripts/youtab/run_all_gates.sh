@@ -66,6 +66,11 @@ if actual != expected:
     sys.exit(1)
 PY
 record npm-lock-inventory $?
+
+begin deepmerge-security-patch
+node vendor/deepmerge/test.js
+record deepmerge-security-patch $?
+
 for index in "${!npm_scopes[@]}"; do
   scope="${npm_scopes[$index]}"
   project="$repo_root/${npm_dirs[$index]}"
