@@ -8341,6 +8341,10 @@ def _probe_custom_endpoint(base_url: str, api_key: str = "") -> Dict[str, Any]:
     if not valid:
         return {"ok": False, "reachable": False, "message": "Enter a valid HTTP or HTTPS endpoint URL.", "models": []}
 
+    from tools.url_safety import is_always_blocked_url
+    if is_always_blocked_url(base_url):
+        return {"ok": False, "reachable": False, "message": "This endpoint address is blocked.", "models": []}
+
     headers = {"Accept": "application/json"}
     if api_key.strip():
         headers["Authorization"] = f"Bearer {api_key.strip()}"

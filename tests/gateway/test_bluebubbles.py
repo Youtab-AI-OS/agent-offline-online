@@ -441,6 +441,7 @@ class TestBlueBubblesAttachmentDownload:
                 pass
 
         async def mock_get(*args, **kwargs):
+            assert kwargs["follow_redirects"] is False
             return MockResponse()
 
         adapter.client = type("MockClient", (), {"get": mock_get})()

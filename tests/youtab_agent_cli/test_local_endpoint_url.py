@@ -46,6 +46,15 @@ def test_server_403_without_a_key_is_access_policy_not_invalid_key(monkeypatch):
     assert "private upstream detail" not in result["message"]
 
 
+def test_custom_endpoint_probe_rejects_cloud_metadata_before_http(monkeypatch):
+    import httpx
+    from youtab_agent_cli import web_server as ws
+
+    monkeypatch.setattr(httpx, "Client", lambda **_kwargs: pytest.fail("metadata target reached HTTP"))
+    result = ws._probe_custom_endpoint("http://169.254.169.254/latest/meta-data")
+    assert result == {"ok": False, "reachable": False, "message": "This endpoint address is blocked.", "models": []}
+
+
 def test_unsupported_selected_proxy_returns_safe_configuration_error(monkeypatch, _isolate_youtab_home):
     import httpx
     from starlette.testclient import TestClient

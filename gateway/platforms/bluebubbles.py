@@ -848,7 +848,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             resp = await self.client.get(
                 self._api_url(f"/api/v1/attachment/{encoded}/download"),
                 timeout=60,
-                follow_redirects=True,
+                follow_redirects=False,
             )
             resp.raise_for_status()
             data = resp.content
