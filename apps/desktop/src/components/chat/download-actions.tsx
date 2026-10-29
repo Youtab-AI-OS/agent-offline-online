@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import type { YoutabExportMode, YoutabExportResult } from '@/global'
 import { useI18n } from '@/i18n'
 import { desktopFsCacheKey } from '@/lib/desktop-fs'
+import { downloadDesktopFile } from '@/lib/download-file'
 import { downloadTextFile } from '@/lib/download-text'
 import { Download, FolderOpen, Save } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
@@ -16,10 +17,12 @@ export type DownloadOutcome = YoutabExportResult | { status: 'started' }
 export function DownloadActions({
   identity,
   disabled = false,
+  downloadDisabled = false,
   save
 }: {
   identity: string
   disabled?: boolean
+  downloadDisabled?: boolean
   save: (mode: YoutabExportMode) => Promise<DownloadOutcome>
 }) {
   const { locale, t } = useI18n()
@@ -124,7 +127,7 @@ export function DownloadActions({
       <span className="inline-flex flex-wrap items-center justify-end gap-1">
         <Button
           aria-label={t.artifactPreview.download}
-          disabled={disabled || busy}
+          disabled={disabled || downloadDisabled || busy}
           onClick={() => void run('download')}
           size="icon-xs"
           title={t.artifactPreview.download}
@@ -193,13 +196,26 @@ export function TextDownload({
   )
 }
 
-export function MessageDownload({ messageId, getMessageText }: { messageId: string; getMessageText: () => string }) {
+export function MessageDownload({
+  messageId,
+  getMessageText,
+  filePath
+}: {
+  messageId: string
+  getMessageText: () => string
+  filePath?: string | null
+}) {
   const name = `youtab-response-${messageId.replace(/[^a-zA-Z0-9_-]/g, '-')}.md`
 
   return (
     <DownloadActions
-      identity={messageId}
-      save={mode => downloadTextFile(name, getMessageText(), 'text/markdown', mode)}
+      downloadDisabled={!filePath}
+      identity={`${messageId}\0${filePath || ''}`}
+      save={mode =>
+        mode === 'download' && filePath
+          ? downloadDesktopFile(filePath, undefined, mode)
+          : downloadTextFile(name, getMessageText(), 'text/markdown', mode)
+      }
     />
   )
 }

@@ -30,6 +30,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { MoreHorizontal } from '@/lib/icons'
 import { GitForkIcon, Loader2Icon, RefreshCwIcon, SmilePlusIcon, Volume2Icon, VolumeXIcon, XIcon } from '@/lib/icons'
+import { messageMediaFilePath } from '@/lib/media'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { formatAgo } from '@/lib/time'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -47,6 +48,7 @@ const EMPTY_PARTS: readonly unknown[] = []
 
 interface MessageActionProps {
   messageId: string
+  filePath?: string | null
   /** Lazy accessor — reads the live message text at action time. Passing the
    *  text itself as a prop forces the whole footer to re-render on every
    *  streaming delta flush (the text changes ~30×/s), which profiling showed
@@ -93,6 +95,7 @@ export const AssistantMessage: FC<{
   }, [completedText])
 
   const getMessageText = useCallback(() => messageContentText(messageRuntime.getState().content), [messageRuntime])
+  const filePath = useMemo(() => messageMediaFilePath(completedText), [completedText])
 
   // Cursor's changed-files card only appears once the turn settles: while the
   // agent is still editing, the tool rows narrate each patch and a card that
@@ -158,7 +161,12 @@ export const AssistantMessage: FC<{
         </MessagePrimitive.Error>
       </div>
       {hasVisibleText && !isInterim && (
-        <AssistantFooter getMessageText={getMessageText} messageId={messageId} onBranchInNewChat={onBranchInNewChat} />
+        <AssistantFooter
+          filePath={filePath}
+          getMessageText={getMessageText}
+          messageId={messageId}
+          onBranchInNewChat={onBranchInNewChat}
+        />
       )}
       {/* Last thing in the turn — under the action bar, the way Cursor ends a
           turn on its summary rather than burying it above the controls. */}
@@ -167,7 +175,7 @@ export const AssistantMessage: FC<{
   )
 }
 
-const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText, onBranchInNewChat }) => {
+const AssistantActionBar: FC<MessageActionProps> = ({ messageId, filePath, getMessageText, onBranchInNewChat }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
 
@@ -210,7 +218,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
           </TooltipIconButton>
         )}
         <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
-        <MessageDownload getMessageText={getMessageText} messageId={messageId} />
+        <MessageDownload filePath={filePath} getMessageText={getMessageText} messageId={messageId} />
         <MessageReplyButton getMessageText={getMessageText} messageId={messageId} />
         <MessageReportButton getMessageText={getMessageText} messageId={messageId} />
         <DropdownMenu>

@@ -15,6 +15,7 @@ import {
   toChatMessages,
   upsertToolPart
 } from './chat-messages'
+import { messageMediaFilePath } from './media'
 
 describe('toChatMessages', () => {
   it('keeps a turn with interleaved tool-only rows in a single bubble', () => {
@@ -353,6 +354,12 @@ describe('renderMediaTags', () => {
     const text = chatMessageText({ id: 'a', role: 'assistant', parts })
 
     expect(text).toBe('ok\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
+  })
+
+  it('selects the delivered image for the message file download', () => {
+    const text = renderMediaTags('Screenshot attached\nMEDIA:C:\\Users\\Tester\\Pictures\\page_1.png')
+    expect(messageMediaFilePath(text)).toBe('C:\\Users\\Tester\\Pictures\\page_1.png')
+    expect(messageMediaFilePath('Screenshot attached without a file')).toBeNull()
   })
 })
 

@@ -60,21 +60,47 @@ it('Save as cancellation produces no saved location or Explorer action', async (
   expect(screen.queryByText('Open in Explorer')).toBeNull()
   expect(screen.queryByRole('status')).toBeNull()
 })
-it('exports the actual message on demand and surfaces write failure without claiming success', async () => {
+it('saves message text and does not offer a file download when no file was delivered', async () => {
   const exportContent = vi.fn(async () => {
     throw new Error('SYNTHETIC DISK FAILURE')
   })
 
   bridge({ exportContent })
   render(<MessageDownload getMessageText={() => '# متن واقعی'} messageId="session/message" />)
-  fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+  expect((screen.getByRole('button', { name: 'Download' }) as HTMLButtonElement).disabled).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: 'Save as…' }))
   expect((await screen.findByRole('alert')).textContent).toContain('SYNTHETIC DISK FAILURE')
   expect(exportContent).toHaveBeenCalledWith({
     name: 'youtab-response-session-message.md',
     data: new TextEncoder().encode('# متن واقعی'),
-    mode: 'download'
+    mode: 'save-as'
   })
   expect(screen.queryByText('Open in Explorer')).toBeNull()
+})
+it('downloads the delivered screenshot file while Save as exports only message text', async () => {
+  const filePath = 'C:\\Users\\Tester\\Pictures\\page_1.png'
+  const exportFile = vi.fn(async () => ({ status: 'saved' as const, path: 'C:\\Users\\Tester\\Downloads\\page_1.png' }))
+
+  const exportContent = vi.fn(async () => ({
+    status: 'saved' as const,
+    path: 'C:\\Users\\Tester\\Downloads\\reply.md'
+  }))
+
+  bridge({ exportFile, exportContent })
+  render(<MessageDownload filePath={filePath} getMessageText={() => 'Screenshot attached'} messageId="response" />)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+  await waitFor(() => expect(exportFile).toHaveBeenCalledWith({ path: filePath, mode: 'download' }))
+  expect(exportContent).not.toHaveBeenCalled()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Save as…' }))
+  await waitFor(() =>
+    expect(exportContent).toHaveBeenCalledWith({
+      name: 'youtab-response-response.md',
+      data: new TextEncoder().encode('Screenshot attached'),
+      mode: 'save-as'
+    })
+  )
 })
 it('does not publish a saved path after the active profile changes', async () => {
   let finish!: (value: { status: 'saved'; path: string }) => void

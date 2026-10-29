@@ -554,6 +554,12 @@ def computer_use_guidance(platform_name: Optional[str] = None) -> str:
         "the BACKGROUND — your actions do not steal the user's cursor, "
         "keyboard "
         + share_line +
+        "For a web page opened with `browser_navigate`, use `browser_vision` "
+        "to capture that browser session; it may have no on-screen OS window. "
+        "Use `computer_use` for native desktop windows. If the user asks to see "
+        "or download a screenshot, put `MEDIA:` immediately before the actual "
+        "absolute screenshot path in the final response so the image and its "
+        "file download appear in chat.\n\n"
         "## Preferred workflow\n"
         "1. Call `computer_use` with `action='capture'` and `mode='som'` "
         "(default). You get a screenshot with numbered overlays on every "

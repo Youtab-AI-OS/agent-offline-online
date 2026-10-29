@@ -138,6 +138,13 @@ export function mediaPathFromMarkdownHref(href?: string): string | null {
   }
 }
 
+/** Media references in a finished assistant reply are the files its Download action may export. */
+export function messageMediaFilePath(text: string): string | null {
+  const links = [...text.matchAll(/#media:[^\s)]+/g)]
+
+  return links.length ? mediaPathFromMarkdownHref(links[links.length - 1][0]) : null
+}
+
 export function filePathFromMediaPath(path: string): string {
   if (!path.startsWith('file:')) {
     return path
