@@ -1,0 +1,662 @@
+"""Tests for the BlueBubbles iMessage gateway adapter."""
+import asyncio
+import json
+import logging
+from urllib.parse import quote
+
+import httpx
+import pytest
+
+from gateway.config import Platform, PlatformConfig
+
+
+def _make_adapter(monkeypatch, **extra):
+    monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
+    monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+    from gateway.platforms.bluebubbles import BlueBubblesAdapter
+
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={
+            "server_url": "http://localhost:1234",
+            "password": "secret",
+            **extra,
+        },
+    )
+    return BlueBubblesAdapter(cfg)
+
+
+class TestBlueBubblesConfigLoading:
+    def test_apply_env_overrides_bluebubbles(self, monkeypatch):
+        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
+        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+        monkeypatch.setenv("BLUEBUBBLES_WEBHOOK_PORT", "9999")
+        monkeypatch.setenv("BLUEBUBBLES_REQUIRE_MENTION", "true")
+        monkeypatch.setenv("BLUEBUBBLES_MENTION_PATTERNS", r'["(?i)^amos\\b"]')
+        from gateway.config import GatewayConfig, _apply_env_overrides
+
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+        assert Platform.BLUEBUBBLES in config.platforms
+        bc = config.platforms[Platform.BLUEBUBBLES]
+        assert bc.enabled is True
+        assert bc.extra["server_url"] == "http://localhost:1234"
+        assert bc.extra["password"] == "secret"
+        assert bc.extra["webhook_port"] == 9999
+        assert bc.extra["require_mention"] is True
+        assert bc.extra["mention_patterns"] == ["(?i)^amos\\b"]
+
+
+class TestBlueBubblesHelpers:
+    def test_check_requirements(self, monkeypatch):
+        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
+        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+        from gateway.platforms.bluebubbles import check_bluebubbles_requirements
+
+        assert check_bluebubbles_requirements() is True
+
+
+    def test_format_message_preserves_underscores_in_identifiers(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        text = "Use /api_v2 with FEATURE_FLAG_NAME and config_file.json"
+        assert adapter.format_message(text) == text
+
+    def test_strip_markdown_headers(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert adapter.format_message("## Heading\ntext") == "Heading\ntext"
+
+
+    def test_init_normalizes_webhook_path(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_path="bluebubbles-webhook")
+        assert adapter.webhook_path == "/bluebubbles-webhook"
+
+
+    def test_server_url_normalized(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, server_url="http://localhost:1234/")
+        assert adapter.server_url == "http://localhost:1234"
+
+    def test_server_url_base_path_is_preserved(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, server_url="https://localhost:1234/bridge/")
+        assert adapter.server_url == "https://localhost:1234/bridge"
+        assert adapter._api_url("/api/v1/ping").startswith(
+            "https://localhost:1234/bridge/api/v1/ping?"
+        )
+
+    @pytest.mark.parametrize(
+        ("server_url", "expected"),
+        [
+            ("localhost:1234/bridge/", "http://localhost:1234/bridge"),
+            ("http://[::1]:1234/bridge/", "http://[::1]:1234/bridge"),
+            ("https://localhost:1234/bridge/", "https://localhost:1234/bridge"),
+        ],
+    )
+    def test_server_url_accepts_supported_authorities(
+        self, monkeypatch, server_url, expected
+    ):
+        assert _make_adapter(monkeypatch, server_url=server_url).server_url == expected
+
+    @pytest.mark.parametrize(
+        "server_url",
+        [
+            "http://user:credential@localhost:1234",
+            "http://user@localhost:1234",
+            "http://localhost:1234/bridge?token=credential",
+            "http://localhost:1234/bridge?",
+            "http://localhost:1234/bridge#credential",
+            "http://localhost:1234/bridge#",
+            "http://localhost:bad-port",
+            "http://[bad-ipv6",
+            "ftp://localhost:1234",
+            "sftp://localhost:1234",
+            "http://local host:1234",
+            "http://localhost :1234",
+            "http://localhost:\t1234",
+            "http://localhost:\r\n1234",
+            "http://localhost:",
+            "http://[::1]:",
+            "http://localhost:0",
+        ],
+    )
+    def test_server_url_rejects_untrusted_components(self, monkeypatch, server_url):
+        with pytest.raises(ValueError, match="^Invalid BlueBubbles server URL$") as error:
+            _make_adapter(monkeypatch, server_url=server_url)
+        assert "credential" not in str(error.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation",
+    ["connect", "register", "unregister", "create", "send", "download", "attachment"],
+)
+async def test_http_failures_never_expose_api_password(
+    monkeypatch, caplog, tmp_path, operation
+):
+    password = "pass@word /?"
+    adapter = _make_adapter(monkeypatch, password=password)
+    request = httpx.Request("POST", adapter._api_url("/api/v1/ping"))
+    response = httpx.Response(404, request=request)
+
+    class FailingClient:
+        async def get(self, *args, **kwargs):
+            response.raise_for_status()
+
+        async def post(self, *args, **kwargs):
+            response.raise_for_status()
+
+        async def delete(self, *args, **kwargs):
+            response.raise_for_status()
+
+        async def aclose(self):
+            pass
+
+    adapter.client = FailingClient()
+    caplog.set_level(logging.DEBUG, logger="gateway.platforms.bluebubbles")
+    result = None
+    if operation == "connect":
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: FailingClient())
+        assert await adapter.connect() is False
+        assert "localhost:1234" not in caplog.text
+    elif operation == "register":
+        async def no_webhooks(_):
+            return []
+        monkeypatch.setattr(adapter, "_find_registered_webhooks", no_webhooks)
+        assert await adapter._register_webhook() is False
+    elif operation == "unregister":
+        async def existing_webhook(_):
+            return [{"id": "1"}]
+        monkeypatch.setattr(adapter, "_find_registered_webhooks", existing_webhook)
+        assert await adapter._unregister_webhook() is False
+    elif operation == "create":
+        result = await adapter._create_chat_for_handle("person@example.com", "hello")
+    elif operation == "send":
+        result = await adapter.send("iMessage;-;person@example.com", "hello")
+    elif operation == "download":
+        assert await adapter._download_attachment("att-guid", {}) is None
+    else:
+        attachment = tmp_path / "attachment.txt"
+        attachment.write_text("test", encoding="utf-8")
+        result = await adapter._send_attachment(
+            "iMessage;-;person@example.com", str(attachment)
+        )
+
+    output = caplog.text
+    if result is not None:
+        assert result.success is False
+        output += result.error or ""
+    assert "HTTPStatusError (HTTP 404)" in output
+    assert password not in output
+    assert quote(password, safe="") not in output
+    assert "password=" not in output
+
+
+def test_non_http_exception_message_is_not_serialized():
+    from gateway.platforms.bluebubbles import _safe_http_error
+
+    assert _safe_http_error(RuntimeError("secret in exception")) == "RuntimeError"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["register", "attachment"])
+@pytest.mark.parametrize("echo_form", ["plain", "encoded"])
+async def test_server_json_failure_does_not_echo_password(
+    monkeypatch, caplog, tmp_path, operation, echo_form
+):
+    password = "pass@word /?"
+    adapter = _make_adapter(monkeypatch, password=password)
+    echo = password if echo_form == "plain" else quote(password, safe="")
+    body = {"status": 403, "message": f"rejected password={echo}"}
+    caplog.set_level(logging.DEBUG, logger="gateway.platforms.bluebubbles")
+
+    if operation == "register":
+        adapter.client = object()
+
+        async def no_webhooks(_):
+            return []
+
+        async def rejected_webhook(path, payload):
+            return body
+
+        monkeypatch.setattr(adapter, "_find_registered_webhooks", no_webhooks)
+        monkeypatch.setattr(adapter, "_api_post", rejected_webhook)
+        assert await adapter._register_webhook() is False
+        output = caplog.text
+    else:
+        class RejectedResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return body
+
+        class Client:
+            async def post(self, *args, **kwargs):
+                return RejectedResponse()
+
+        adapter.client = Client()
+        attachment = tmp_path / "attachment.txt"
+        attachment.write_text("test", encoding="utf-8")
+        result = await adapter._send_attachment(
+            "iMessage;-;person@example.com", str(attachment)
+        )
+        assert result.success is False
+        output = caplog.text + (result.error or "")
+
+    assert "403" in output
+    assert password not in output
+    assert quote(password, safe="") not in output
+    assert "password=" not in output
+
+
+class _FakeBlueBubblesRequest:
+    def __init__(self, payload, password="secret"):
+        self.query = {"password": password}
+        self.headers = {}
+        self._body = json.dumps(payload).encode("utf-8")
+
+    async def read(self):
+        return self._body
+
+
+class TestBlueBubblesMentionGating:
+    @pytest.mark.asyncio
+    async def test_group_message_without_mention_is_acknowledged_and_skipped(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            require_mention=True,
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-1",
+                "text": "casual family chatter",
+                "handle": {"address": "+15555550100"},
+                "isFromMe": False,
+                "isGroup": True,
+                "chats": [{"guid": "iMessage;+;group-chat"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled == []
+
+
+class TestBlueBubblesWebhookParsing:
+
+    def test_webhook_can_fall_back_to_sender_when_chat_fields_missing(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        payload = {
+            "data": {
+                "guid": "MESSAGE-GUID",
+                "text": "hello",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+            }
+        }
+        record = adapter._extract_payload_record(payload) or {}
+        chat_guid = adapter._value(
+            record.get("chatGuid"),
+            payload.get("chatGuid"),
+            record.get("chat_guid"),
+            payload.get("chat_guid"),
+            payload.get("guid"),
+        )
+        chat_identifier = adapter._value(
+            record.get("chatIdentifier"),
+            record.get("identifier"),
+            payload.get("chatIdentifier"),
+            payload.get("identifier"),
+        )
+        sender = (
+            adapter._value(
+                record.get("handle", {}).get("address")
+                if isinstance(record.get("handle"), dict)
+                else None,
+                record.get("sender"),
+                record.get("from"),
+                record.get("address"),
+            )
+            or chat_identifier
+            or chat_guid
+        )
+        if not (chat_guid or chat_identifier) and sender:
+            chat_identifier = sender
+        assert chat_identifier == "user@example.com"
+
+
+    def test_extract_payload_record_accepts_list_data(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        payload = {
+            "type": "new-message",
+            "data": [
+                {
+                    "text": "hello",
+                    "chatGuid": "iMessage;-;user@example.com",
+                    "chatIdentifier": "user@example.com",
+                }
+            ],
+        }
+        record = adapter._extract_payload_record(payload)
+        assert record == payload["data"][0]
+
+
+class TestBlueBubblesGuidResolution:
+
+
+    @pytest.mark.asyncio
+    async def test_participant_only_match_does_not_resolve_to_group(self, monkeypatch):
+        """Regression for #24157: contact appearing as a participant in a group
+        chat must NOT be selected when no DM with that exact chatIdentifier exists.
+
+        Otherwise an outbound DM reply leaks into the group thread.
+        """
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_api_post(path, payload):
+            return {
+                "data": [
+                    {
+                        "guid": "iMessage;+;chat0000000000-family-group",
+                        "chatIdentifier": "chat0000000000",
+                        "participants": [
+                            {"address": "user@example.com"},
+                            {"address": "+15555550100"},
+                        ],
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        result = await adapter._resolve_chat_guid("user@example.com")
+        assert result is None, (
+            "participant-only match must not resolve to a group GUID — DM "
+            "replies would leak into the group thread"
+        )
+
+
+    @pytest.mark.asyncio
+    async def test_unresolved_target_is_not_cached(self, monkeypatch):
+        """When no exact match is found, the resolver must NOT cache anything.
+
+        Otherwise a later attempt — after the DM has been created — would
+        keep returning the stale ``None`` from cache. Also guards against a
+        latent variant of #24157 where a group GUID could be cached under a
+        bare address key and persist across calls.
+        """
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_api_post(path, payload):
+            return {
+                "data": [
+                    {
+                        "guid": "iMessage;+;chat0000000000-family-group",
+                        "chatIdentifier": "chat0000000000",
+                        "participants": [{"address": "user@example.com"}],
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        await adapter._resolve_chat_guid("user@example.com")
+        assert "user@example.com" not in adapter._guid_cache
+
+
+class TestBlueBubblesAttachmentDownload:
+    """Verify _download_attachment routes to the correct cache helper."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "guid", ["a" * 1_048_576, None, {}, ""],
+        ids=["oversized", "null", "object", "empty"],
+    )
+    async def test_invalid_guid_is_rejected_before_http_or_logging_value(
+        self, monkeypatch, caplog, guid
+    ):
+        adapter = _make_adapter(monkeypatch)
+
+        class Client:
+            async def get(self, *args, **kwargs):
+                pytest.fail("invalid attachment GUID reached HTTP")
+
+        adapter.client = Client()
+        assert await adapter._download_attachment(guid, {}) is None
+        assert "a" * 1000 not in caplog.text
+
+    def test_download_image_uses_image_cache(self, monkeypatch):
+        """Image MIME routes to cache_image_from_bytes."""
+        adapter = _make_adapter(monkeypatch)
+        # Mock the HTTP client response
+        class MockResponse:
+            status_code = 200
+            content = b"\x89PNG\r\n\x1a\n"
+
+            def raise_for_status(self):
+                pass
+
+        async def mock_get(*args, **kwargs):
+            return MockResponse()
+
+        adapter.client = type("MockClient", (), {"get": mock_get})()
+
+        cached_path = None
+
+        def mock_cache_image(data, ext):
+            nonlocal cached_path
+            cached_path = f"/tmp/test_image{ext}"
+            return cached_path
+
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.cache_image_from_bytes",
+            mock_cache_image,
+        )
+
+        att_meta = {"mimeType": "image/png", "transferName": "photo.png"}
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._download_attachment("att-guid-123", att_meta)
+        )
+        assert result == "/tmp/test_image.png"
+
+
+def test_redaction_omits_oversized_value_before_regex(monkeypatch):
+    from gateway.platforms.bluebubbles import _redact
+
+    class ForbiddenRegex:
+        def sub(self, *args, **kwargs):
+            pytest.fail("oversized log value reached regex")
+
+    monkeypatch.setattr("gateway.platforms.bluebubbles._PHONE_RE", ForbiddenRegex())
+    monkeypatch.setattr("gateway.platforms.bluebubbles._EMAIL_RE", ForbiddenRegex())
+    assert _redact("a" * 1_048_576) == "[REDACTED: oversized log value]"
+
+
+def test_redaction_preserves_valid_email_and_phone_masking():
+    from gateway.platforms.bluebubbles import _redact
+
+    assert _redact("iMessage;-;name+tag@example.com, +15555550100") == (
+        "iMessage;-;[REDACTED], [REDACTED]"
+    )
+    assert _redact("a" * 4096) == "a" * 4096
+
+
+def test_redaction_handles_maximum_length_near_miss_email():
+    from gateway.platforms.bluebubbles import _redact
+
+    # An attacker-controlled attachment GUID can contain a long local part and
+    # a domain without the required dot. It must remain bounded and unchanged.
+    near_miss = ("a." * 1023) + "@" + ("b" * 2048)
+    assert len(near_miss) == 4095
+    assert _redact(near_miss) == near_miss
+    assert _redact("a." * 1023 + "@example.com") == "[REDACTED]"
+
+
+# ---------------------------------------------------------------------------
+# Webhook registration
+# ---------------------------------------------------------------------------
+
+
+class TestBlueBubblesWebhookUrl:
+    """_webhook_url property normalises local hosts to 'localhost'."""
+
+    def test_default_host(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        # Default webhook_host is 0.0.0.0 → normalized to localhost
+        assert "localhost" in adapter._webhook_url
+        assert str(adapter.webhook_port) in adapter._webhook_url
+        assert adapter.webhook_path in adapter._webhook_url
+
+
+    def test_register_url_omits_query_when_no_password(self, monkeypatch):
+        """If no password is configured, the register URL should be the bare URL."""
+        monkeypatch.delenv("BLUEBUBBLES_PASSWORD", raising=False)
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server_url": "http://localhost:1234", "password": ""},
+        )
+        adapter = BlueBubblesAdapter(cfg)
+        assert adapter._webhook_register_url == adapter._webhook_url
+
+
+class TestBlueBubblesWebhookRegistration:
+    """Tests for _register_webhook, _unregister_webhook, _find_registered_webhooks."""
+
+    @staticmethod
+    def _mock_client(get_response=None, post_response=None, delete_ok=True):
+        """Build a tiny mock httpx.AsyncClient."""
+
+        async def mock_get(*args, **kwargs):
+            class R:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+                def json(self):
+                    return get_response or {"status": 200, "data": []}
+            return R()
+
+        async def mock_post(*args, **kwargs):
+            class R:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+                def json(self):
+                    return post_response or {"status": 200, "data": {}}
+            return R()
+
+        async def mock_delete(*args, **kwargs):
+            class R:
+                status_code = 200 if delete_ok else 500
+                def raise_for_status(self_inner):
+                    if not delete_ok:
+                        raise Exception("delete failed")
+            return R()
+
+        return type(
+            "MockClient", (),
+            {"get": mock_get, "post": mock_post, "delete": mock_delete},
+        )()
+
+    # -- _find_registered_webhooks --
+
+    def test_find_registered_webhooks_returns_matches(self, monkeypatch):
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_url
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 1, "url": url, "events": ["new-message"]},
+                {"id": 2, "url": "http://other:9999/hook", "events": ["message"]},
+            ]}
+        )
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._find_registered_webhooks(url)
+        )
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
+
+    # -- _register_webhook --
+
+    def test_register_fresh(self, monkeypatch):
+        """No existing webhook → POST creates one."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": []},
+            post_response={"status": 200, "data": {"id": 42}},
+        )
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._register_webhook()
+        )
+        assert ok is True
+
+
+    def test_register_reuses_existing(self, monkeypatch):
+        """Crash resilience — existing registration is reused, no POST needed."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_register_url
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 7, "url": url, "events": ["new-message"]},
+            ]},
+        )
+
+        # Track whether POST was called
+        post_called = False
+        orig_api_post = adapter._api_post
+        async def tracking_post(path, payload):
+            nonlocal post_called
+            post_called = True
+            return await orig_api_post(path, payload)
+        adapter._api_post = tracking_post
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._register_webhook()
+        )
+        assert ok is True
+        assert not post_called, "Should reuse existing, not POST again"
+
+
+    # -- _unregister_webhook --
+
+
+    def test_unregister_removes_all_duplicates(self, monkeypatch):
+        """Multiple orphaned registrations for same URL — all get removed."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_register_url
+        deleted_ids = []
+
+        async def mock_delete(*args, **kwargs):
+            # Extract ID from URL
+            url_str = args[0] if args else ""
+            deleted_ids.append(url_str)
+            class R:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+            return R()
+
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 1, "url": url},
+                {"id": 2, "url": url},
+                {"id": 3, "url": "http://other/hook"},
+            ]},
+        )
+        adapter.client.delete = mock_delete
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._unregister_webhook()
+        )
+        assert ok is True
+        assert len(deleted_ids) == 2
+
+

@@ -1,0 +1,19 @@
+{
+  "name": "deepmerge",
+  "version": "4.3.2",
+  "description": "Locally patched deepmerge 4.3.1 for CVE-2026-93753",
+  "private": true,
+  "main": "index.js",
+  "engines": {
+    "node": ">=0.10.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TehShrike/deepmerge.git",
+    "commit": "d0256cde79edba0c8e10a888ac439124318b14ca"
+  },
+  "scripts": {
+    "test": "node test.js"
+  }
+}

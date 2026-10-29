@@ -1,0 +1,52 @@
+{
+  "distribution": "pywinpty",
+  "upstream_version": "2.0.15",
+  "patched_version": "2.0.15+youtab.1",
+  "supported_ABIs": [
+    "cp311",
+    "cp312",
+    "cp313"
+  ],
+  "platform": "win_amd64",
+  "upstream_source": "https://github.com/spyder-ide/pywinpty",
+  "license": "MIT",
+  "compiled_native_source": "winpty-rs0.4.1 verified embedded source paths; native components unchanged",
+  "source_original_sha256": "388ad6ce2a59679cd94aa73b93ffe67a0099f725a47a94b300fd380eed06d87e",
+  "source_patched_sha256": "85607b6521367483b5975b281246be3afa168c9b94c8686d20bdeaf6be44a79d",
+  "patch_sha256": "290e216c2c4bac48d2e94fa31711bbe448066403854e585193261d838fc38589",
+  "license_sha256": "f878d4767f9ad2e43d3083efa00201b000ce937d9ee8626e00ba5c72aac951e2",
+  "official_urls": {
+    "cp311": "https://files.pythonhosted.org/packages/5e/ac/6884dcb7108af66ad53f73ef4dad096e768c9203a6e6ce5e6b0c4a46e238/pywinpty-2.0.15-cp311-cp311-win_amd64.whl",
+    "cp312": "https://files.pythonhosted.org/packages/88/e5/9714def18c3a411809771a3fbcec70bffa764b9675afb00048a620fca604/pywinpty-2.0.15-cp312-cp312-win_amd64.whl",
+    "cp313": "https://files.pythonhosted.org/packages/fb/16/2ab7b3b7f55f3c6929e5f629e1a68362981e4e5fed592a2ed1cb4b4914a5/pywinpty-2.0.15-cp313-cp313-win_amd64.whl"
+  },
+  "wheels": [
+    {
+      "abi": "cp311",
+      "official_sha256": "9a6bcec2df2707aaa9d08b86071970ee32c5026e10bcc3cc5f6f391d85baf7ca",
+      "wheel_sha256": "715faba1f605889ca39242b9c6b09f247f815393b62b154cf8cbc93cb55bbbbf",
+      "patched_source_sha256": "85607b6521367483b5975b281246be3afa168c9b94c8686d20bdeaf6be44a79d",
+      "native_sha256": "0bdbcda99f77f54ca1bb8fb10bbf9d78a721aac5f32ea95249254e19d3002298",
+      "license_sha256": "f878d4767f9ad2e43d3083efa00201b000ce937d9ee8626e00ba5c72aac951e2"
+    },
+    {
+      "abi": "cp312",
+      "official_sha256": "83a8f20b430bbc5d8957249f875341a60219a4e971580f2ba694fbfb54a45ebc",
+      "wheel_sha256": "c7bf8efadc2804a5c3e186b46fe4254ba63bf78d211908267d0b6b97b606b285",
+      "patched_source_sha256": "85607b6521367483b5975b281246be3afa168c9b94c8686d20bdeaf6be44a79d",
+      "native_sha256": "488c12aaea91b2828cd5224b1050565ce4e6660e7adef2fb07510f89f5743d33",
+      "license_sha256": "f878d4767f9ad2e43d3083efa00201b000ce937d9ee8626e00ba5c72aac951e2"
+    },
+    {
+      "abi": "cp313",
+      "official_sha256": "ab5920877dd632c124b4ed17bc6dd6ef3b9f86cd492b963ffdb1a67b85b0f408",
+      "wheel_sha256": "1dc2c6c5d8f3a57c0f9f443d1e99bedb950764da93e0e9564f74a3f65be257ff",
+      "patched_source_sha256": "85607b6521367483b5975b281246be3afa168c9b94c8686d20bdeaf6be44a79d",
+      "native_sha256": "45a87d51d06645c2cce52632e4fe8c9af53eb0471e80047c6b95ee37abe89555",
+      "license_sha256": "f878d4767f9ad2e43d3083efa00201b000ce937d9ee8626e00ba5c72aac951e2"
+    }
+  ],
+  "change": "Remove premature process/pipe EOF break from SDK TCP reader; drain cached bytes until native read EOF. No native binary rebuild or global monkeypatch.",
+  "status": "D-only source preparation pending fresh review; customer pipeline and complete release qualification separate",
+  "maintenance": "Replace local patch with upstream fixed version only after same native behavior and identity gates pass."
+}

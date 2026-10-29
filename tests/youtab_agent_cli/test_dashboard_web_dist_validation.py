@@ -1,0 +1,187 @@
+"""Regression tests: `youtab dashboard` validates YOUTAB_AGENT_WEB_DIST before serving.
+
+A custom YOUTAB_AGENT_WEB_DIST without --skip-build previously skipped BOTH the
+build and any validation, so the server started and served 404s with no
+obvious cause (same failure mode as issue #23817, reached via the env-var
+path instead of --skip-build). The env-var branch must now fail fast when
+the dist has no index.html, and proceed when it does.
+
+Design credit: PR #17845 (@Caelier).
+"""
+
+import sys
+import types
+import hashlib
+import json
+
+import pytest
+
+
+@pytest.fixture()
+def main_mod():
+    import youtab_agent_cli.main as main
+    return main
+
+
+def _args(**over):
+    base = {
+        "host": "127.0.0.1",
+        "port": 0,
+        "no_open": True,
+        "open_profile": None,
+        "skip_build": False,
+        "headless_backend": False,
+        "tui": False,
+    }
+    base.update(over)
+    return types.SimpleNamespace(**base)
+
+
+def _wire_common(main_mod, monkeypatch):
+    monkeypatch.setattr(
+        "youtab_agent_cli.profiles.get_active_profile_name", lambda: "default"
+    )
+    monkeypatch.setattr(main_mod, "_sync_bundled_skills_quietly", lambda: None)
+    monkeypatch.setitem(sys.modules, "fastapi", types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules,
+        "youtab_logging",
+        types.SimpleNamespace(setup_logging=lambda **_k: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "youtab_agent_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setattr(
+        "youtab_agent_cli.mcp_startup.start_background_mcp_discovery",
+        lambda **_k: None,
+    )
+
+
+def test_env_dist_without_index_exits(main_mod, monkeypatch, tmp_path, capsys):
+    """YOUTAB_AGENT_WEB_DIST pointing at a dist with no index.html must exit 1,
+    not start a server that 404s."""
+    _wire_common(main_mod, monkeypatch)
+    empty_dist = tmp_path / "empty_dist"
+    empty_dist.mkdir()
+    monkeypatch.setenv("YOUTAB_AGENT_WEB_DIST", str(empty_dist))
+
+    started = []
+    monkeypatch.setitem(
+        sys.modules,
+        "youtab_agent_cli.web_server",
+        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
+    )
+    builds = []
+    monkeypatch.setattr(
+        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod.cmd_dashboard(_args())
+
+    assert exc.value.code == 1
+    assert started == []
+    assert builds == []  # env var set -> build skipped, validation is the gate
+    out = capsys.readouterr().out
+    assert "YOUTAB_AGENT_WEB_DIST" in out and str(empty_dist) in out
+
+
+
+
+# ---------------------------------------------------------------------------
+# --skip-build recovery (issue #59288): a missing dist under --skip-build
+# should warn and attempt ONE recovery build via _build_web_ui before the
+# fatal exit, instead of hard-failing immediately.
+# ---------------------------------------------------------------------------
+
+
+def test_skip_build_missing_dist_attempts_one_recovery_build(
+    main_mod, monkeypatch, tmp_path, capsys
+):
+    """--skip-build + missing index.html triggers exactly one recovery build;
+    when the build produces a dist, the server starts."""
+    _wire_common(main_mod, monkeypatch)
+    monkeypatch.delenv("YOUTAB_AGENT_WEB_DIST", raising=False)
+    project_root = tmp_path / "proj"
+    dist = project_root / "youtab_agent_cli" / "web_dist"
+    dist.mkdir(parents=True)
+    monkeypatch.setattr(main_mod, "PROJECT_ROOT", project_root)
+
+    started = []
+    monkeypatch.setitem(
+        sys.modules,
+        "youtab_agent_cli.web_server",
+        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
+    )
+
+    builds = []
+
+    def fake_build(web_dir, *, fatal=False):
+        builds.append((web_dir, fatal))
+        (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(main_mod, "_build_web_ui", fake_build)
+
+    main_mod.cmd_dashboard(_args(skip_build=True))
+
+    assert len(builds) == 1  # exactly ONE recovery build
+    assert builds[0][0] == project_root / "web"
+    assert len(started) == 1
+    out = capsys.readouterr().out
+    assert "recovery build" in out.lower()
+
+
+def test_customer_skip_build_verifies_dashboard_assets_before_server(
+    main_mod, monkeypatch, tmp_path,
+) -> None:
+    _wire_common(main_mod, monkeypatch)
+    monkeypatch.delenv("YOUTAB_AGENT_WEB_DIST", raising=False)
+    root = tmp_path / "customer"
+    dist = root / "youtab_agent_cli/web_dist"
+    dist.mkdir(parents=True)
+    asset = dist / "index.html"
+    asset.write_bytes(b"<main>verified</main>")
+    size = asset.stat().st_size
+    sha = hashlib.sha256(asset.read_bytes()).hexdigest()
+    relative = "youtab_agent_cli/web_dist/index.html"
+    record = {"path": relative, "size": size, "sha256": sha}
+    tree = hashlib.sha256(f"{relative}\0{size}\0{sha}\n".encode()).hexdigest()
+    image = root / "customer-image/windows-x64/manifest.json"
+    image.parent.mkdir(parents=True)
+    image.write_text(json.dumps({
+        "source_sha": "a" * 40,
+        "components": ["browser", "dashboard", "desktop", "node", "tui"],
+        "dashboard_tree_sha256": tree,
+        "files": [record],
+    }), encoding="utf-8")
+    monkeypatch.setattr(main_mod, "PROJECT_ROOT", root)
+    started = []
+    monkeypatch.setitem(sys.modules, "youtab_agent_cli.web_server",
+                        types.SimpleNamespace(start_server=lambda **kwargs: started.append(kwargs)))
+    main_mod.cmd_dashboard(_args(skip_build=True))
+    assert len(started) == 1
+    asset.write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="customer dashboard"):
+        main_mod.cmd_dashboard(_args(skip_build=True))
+    assert len(started) == 1
+
+
+
+
+# ---------------------------------------------------------------------------
+# Desktop-inherited env isolation (issue #52945 / supersedes #52948, #67402)
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+

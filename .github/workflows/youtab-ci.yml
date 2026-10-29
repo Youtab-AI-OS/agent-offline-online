@@ -1,0 +1,273 @@
+name: Youtab Agent Runtime gates
+
+on:
+  pull_request:
+  # `push` to main, because `pull_request` never verifies main itself.
+  #
+  # A `pull_request` run builds a throwaway merge of the PR head onto whatever
+  # main was AT THAT MOMENT, and reports on that ephemeral commit. So two PRs
+  # can each go green against main@X and then be merged minutes apart: the
+  # second merge produces main@Z, a tree no run has ever seen, and nothing in
+  # this workflow notices. That is a mid-air collision, and it is the one way a
+  # repository with four green required checks still ends up with a broken main.
+  # It is not hypothetical here -- this branch's own history contains a
+  # "pin the new job to the checkout main already moved to" commit, which is
+  # what that collision looks like when a human catches it by hand.
+  #
+  # It is also the sequencing that makes the four contexts reportable on the
+  # branch at all. Before this, main's tip carried exactly one check run
+  # (Dependabot) and none of the gates, so branch protection was being asked to
+  # require statuses that had never once been produced for a commit on main.
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: py
+        with:
+          python-version: "3.12"
+      # `.[dev]` pins Starlette but NOT FastAPI: the core dependency is
+      # `fastapi>=0.104.0,<1`, so pip resolved whatever was newest and this job
+      # tested a different router framework than production builds. That is not
+      # academic -- it reported 136 of this application's 294 routes because a
+      # newer FastAPI wraps included routers in a type the older one flattens.
+      # The `web` extra carries the same FastAPI pin the production image gets
+      # from `uv.lock`, so adding it makes the tested framework the deployed one.
+      - name: Install locked development environment
+        # `slack` joins dev,web because the gate now runs the whole
+        # `tests/youtab_agent_cli` directory, and the platform-picker tests
+        # assert on plugins that only import when their extra is present.
+        # Without it `slack-platform` fails to load on `No module named
+        # 'aiohttp'`, slack drops out of the picker, and the test correctly
+        # reports over-filtering. The right fix is to give the tests the
+        # environment they describe, not to teach the test to expect a
+        # half-installed one. No pyproject change, so `uv lock --check` is
+        # unaffected: these pins already live in the `slack` extra.
+        #
+        # `wakeword-ingest` joins for the same reason and is spelled as the extra
+        # on purpose. This gate collects the whole of `tests/tools`, which
+        # includes the wake-word ingestion suites, and human speaker submissions
+        # arrive as AAC-LC `.m4a` at 48 kHz from phone voice-memo apps:
+        # `scripts/wakeword/import_speaker.py` reads container facts itself but
+        # needs a real decoder (PyAV) for the LEVEL facts -- peak, RMS, clipping
+        # runs, noise floor. Those tests fail rather than skip where the decoder
+        # is missing, deliberately, because a skip is exactly how PyAV stayed an
+        # undocumented host dependency until it was pinned. Named as the extra
+        # rather than as a bare `av==` pin so this job exercises one of the two
+        # install commands `pyproject.toml` documents for an ingestion machine,
+        # and so the pin cannot drift between here and the lock.
+        #
+        # Extended in place rather than added as a second step: the editable
+        # install is governed by
+        # `tests/youtab_runtime/test_framework_version_matches_lock.py`
+        # (`test_required_ci_installs_the_governed_extra`), which requires every
+        # `pip install -e` line here to carry the `web` extra so FastAPI cannot
+        # resolve freely from the core range again.
+        run: python -m pip install -e '.[dev,web,slack,wakeword-ingest]'
+      # The branding gate OCRs every shipped image, and this runner had no OCR
+      # engine at all -- so it read none of the 61 tracked images and reported
+      # that as if the images were at fault.
+      #
+      # RapidOCR rather than tesseract, measured on this repository's assets:
+      # over the same 61 images, rapidocr finds the 16 that carry the retired
+      # brand and tesseract finds 1. These are UI screenshots with small
+      # anti-aliased text, which tesseract reads poorly. Installing tesseract
+      # here would be worse than useless: `_ocr_backend()` prefers whichever
+      # engine it finds first, so its presence would displace the accurate one
+      # and turn a known 16-image finding into a falsely reassuring 1.
+      - name: Install the OCR engine the branding gate needs
+        run: python -m pip install 'rapidocr-onnxruntime==1.4.4'
+      # `uv lock --check --offline` exited 127 -- uv was never on this runner,
+      # so the lock file has never actually been verified in CI. Installed from
+      # PyPI rather than via a setup action: every action here is SHA-pinned,
+      # and a pip pin is a smaller supply-chain surface than a new action.
+      # 0.8.17 is the version this lock (version 1, revision 3) was verified
+      # against.
+      - name: Install uv for the lock-file gate
+        run: python -m pip install 'uv==0.8.17'
+      # The wake word ships two artifacts, and macOS ARM64 loads the tflite one
+      # because openWakeWord's ONNX embedding model is dead there
+      # (dscripka/openWakeWord#336). `onnxruntime` reaches this runner as a
+      # transitive of the OCR engine above, so the ONNX artifact is executed by
+      # the regression tests either way -- without a tflite interpreter the
+      # file every Mac user actually loads would ship unexecuted, which is the
+      # gap this repository just spent a commit closing for `tests/tools`.
+      #
+      # Same pin as the `wake` extra, and a workflow step rather than a `dev`
+      # entry for the reason recorded below: it is CI tooling, and adding it to
+      # the extra would regenerate uv.lock.
+      - name: Install the tflite runtime the wake-word regression tests need
+        run: python -m pip install 'ai-edge-litert==2.1.6'
+      # `scripts/run_tests.sh` refuses to run unless it finds a venv carrying
+      # pytest at .venv/ or venv/, or YOUTAB_AGENT_PYTHON pointing at a python
+      # that has it. `pip install -e '.[dev]'` above installs into the
+      # setup-python interpreter, which is neither -- so the guard fired and
+      # the runtime suite has never once executed here. Pointing the variable
+      # at that interpreter satisfies the guard without weakening it.
+      #
+      # Both pins above are deliberately kept out of the `dev` extra: they are
+      # CI tooling, not package dependencies, and adding them there would force
+      # a uv.lock regeneration that the uv-lock gate then has to re-verify.
+      - name: Unit, integration, E2E, OWASP, SAST, secret, dependency and branding gates
+        env:
+          YOUTAB_AGENT_PYTHON: ${{ steps.py.outputs.python-path }}
+        run: scripts/youtab/run_all_gates.sh
+      # In this job rather than a job of its own, because `python-security` is
+      # a required check and a new job would not be: a TLS floor proved by a
+      # check nobody has to pass is a floor that can be removed by a green PR.
+      #
+      # Not in `run_all_gates.sh` either. That script runs on workstations,
+      # where a missing binary is reported as a gate failure -- correctly, but
+      # it would mean every local run of every gate went red for want of a
+      # Docker daemon that this repository does not otherwise need.
+      #
+      # `!cancelled()` so the TLS evidence is produced even when an unrelated
+      # gate above fails. The job is still red either way; this only decides
+      # whether the run tells you about both.
+      - name: Origin TLS floor -- nginx 1.18 config test and real handshake matrix
+        if: ${{ !cancelled() }}
+        run: scripts/youtab/nginx_tls_gate.sh
+
+  # Both shipped wake-word artifacts, executed on the operating systems that
+  # load them. `python-security` above already runs the regression suite, but
+  # only on ubuntu-latest, so two of the three desktop platforms have never
+  # executed the file their users actually load: Windows loads
+  # `hey_youtab.onnx`, and macOS ARM64 loads `hey_youtab.tflite` because
+  # openWakeWord's ONNX embedding model returns near-zero scores there
+  # (dscripka/openWakeWord#336).
+  #
+  # A separate job because the whole subject is the runner OS — `python-security`
+  # cannot absorb it the way the TLS step was absorbed. That did mean it was not
+  # a required check, and the note on the TLS step above says why that matters.
+  # Both legs are now required on main by the `main-required-gates` ruleset:
+  # `wake-word-backends (ubuntu-latest)` and
+  # `wake-word-backends (windows-latest)`, alongside `python-security` and
+  # `javascript`. Renaming this job or either matrix entry renames the check
+  # context and the ruleset then waits forever on a status nothing produces --
+  # so a rename is a two-place change, here and in the ruleset.
+  wake-word-backends:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # macOS ARM64 is ENABLED. It is the one platform where the tflite
+        # artifact is what users actually load — `default_inference_framework()`
+        # returns tflite on Darwin ARM64 and onnx everywhere else — so without
+        # this leg the shipped .tflite is never exercised on the OS that loads
+        # it, and `verify_backends.py` runs unchanged here.
+        #
+        # Cost, stated rather than hidden: this repository is private, where
+        # GitHub bills macOS minutes at 10x. The job is small — the other two
+        # legs finish in 24-50s — so the exposure is minutes, not hours, and
+        # the alternative was shipping a tflite artifact no CI job ever loaded
+        # on its target OS.
+        #
+        # `include:` rather than a third entry in `os:` above so the literal
+        # `os:` list stays the thing the CI-wiring test reads.
+        include:
+          - os: macos-latest
+        #
+        # Do NOT add `macos-13`, and do NOT "fix" a failure here by switching to
+        # it. That runner is Intel, and neither pin has a macOS x86_64 wheel:
+        # onnxruntime==1.27.0 publishes only macosx_14_0_arm64 for Darwin
+        # (its universal2 build was dropped after 1.22.0) and ai-edge-litert
+        # has only ever shipped arm64 there. The job would fail at
+        # `pip install`, and it would be right to. Apple-Silicon runners
+        # (`macos-latest`, or a pinned `macos-14`/`macos-15`) are the only
+        # viable macOS legs.
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      # The `wake` extra's own pins, not `latest`. The claim being made is
+      # about the artifacts under the versions users install, so a newer
+      # runtime here would measure something nobody runs. `ai-edge-litert` is
+      # marked `platform_system == 'Darwin'` in that extra and is installed
+      # unconditionally here, because the tflite artifact ships on every
+      # platform and an untested binary is the gap this job closes.
+      - name: Native Windows Installer library contracts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $nativeCargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+          $nativeRustupHome = if ($env:RUSTUP_HOME) { $env:RUSTUP_HOME } else { Join-Path $env:USERPROFILE '.rustup' }
+          if (-not (Test-Path -LiteralPath $nativeCargoHome -PathType Container) -or -not (Test-Path -LiteralPath $nativeRustupHome -PathType Container)) { throw 'Existing Rust development roots are required' }
+          $env:CARGO_HOME = $nativeCargoHome
+          $env:RUSTUP_HOME = $nativeRustupHome
+          cargo fetch --locked --manifest-path apps/bootstrap-installer/src-tauri/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw 'Locked development dependency prefetch failed' }
+          # The offline Cargo test embeds the verified Microsoft standalone file.
+          # Fetch it on the build runner before entering the isolated test wrapper.
+          $nodeExe = (Get-Command node.exe -CommandType Application).Source
+          & $nodeExe apps/bootstrap-installer/scripts/prepare-webview2.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned Microsoft WebView2 standalone prefetch failed' }
+          # The native admission tests deliberately reject mutable ancestors.
+          # RUNNER_TEMP lives under the hosted runner's shared-writable checkout
+          # tree, so keep only the Cargo target there and put the synthetic
+          # private namespace under the runner's owner-private profile.
+          $qaParent = Join-Path $env:USERPROFILE 'youtab-native-qa'
+          $targetDir = Join-Path $env:RUNNER_TEMP 'youtab-native-cargo'
+          New-Item -ItemType Directory -Path $qaParent,$targetDir -Force | Out-Null
+          $env:PSModuleAnalysisCachePath = Join-Path $qaParent 'ModuleAnalysisCache'
+          $pythonExe = Join-Path $env:pythonLocation 'python.exe'
+          $pythonHash = (Get-FileHash -LiteralPath $pythonExe -Algorithm SHA256).Hash
+          & ./scripts/test-native-windows.ps1 -Python $pythonExe -PythonSha256 $pythonHash -PrivateQaRoot $qaParent -CargoTargetDir $targetDir -CargoHome $nativeCargoHome -RustupHome $nativeRustupHome
+      - name: Install both wake-word backends at the shipped pins
+        run: python -m pip install "numpy==2.4.3" "onnxruntime==1.27.0" "ai-edge-litert==2.1.6" "pytest==9.0.2"
+      - name: Both artifacts load, agree and keep up with the frame rate
+        run: python scripts/wakeword/verify_backends.py --report backend-report.json
+      # The report is the evidence, and it is printed rather than uploaded:
+      # every action in this workflow is SHA-pinned, and a log line is a
+      # smaller supply-chain surface than a new action. It contains only
+      # scores over committed synthetic fixtures — no recorded speech, no
+      # paths outside the checkout.
+      - name: The measured record
+        run: cat backend-report.json
+      - name: Parity, latency and memory gate
+        run: python -m pytest tests/tools/test_wake_word_backend_parity.py tests/tools/test_wake_word_model_assets.py -q
+      # The real-human ingestion guards, on both operating systems.
+      #
+      # `python-security` above already collects the whole of `tests/tools`, so
+      # these executed -- but only ever on ubuntu-latest. That is not good
+      # enough for this particular file, because every guard in it is about
+      # paths, filesystem reads and manifest bytes: `build_dataset` resolves
+      # each clip against the manifest's own directory, hashes the manifest
+      # bytes into stats, and refuses a manifest whose declared split is not
+      # `train`. Path resolution and byte-exact hashing are precisely where
+      # Windows differs (separators, and the text mode that would turn LF into
+      # CRLF and change the sha256 of the thing being traced). A guard that
+      # protects the sealed evaluation speaker on Linux and has never been
+      # executed on Windows is a guard whose coverage stops at the operator's
+      # choice of laptop.
+      #
+      # In this job rather than a new one, for the reason recorded on the TLS
+      # step in `python-security`: this job's two legs are required checks and a
+      # new job would not be, so a fail-closed guard proved only by a check
+      # nobody has to pass could be removed by a green PR.
+      #
+      # No new dependency. The file needs numpy and pytest, both already
+      # installed above; `pyroomacoustics` and openWakeWord are monkeypatched
+      # out by the tests themselves, and no recorded speech is read -- the
+      # fixtures describe a speaker who does not exist.
+      - name: Real-human ingestion guards (train-split-only, sealed speaker, excluded clips)
+        run: python -m pytest tests/tools/test_wakeword_human_training_data.py -q
+
+  javascript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install exact JavaScript lock
+        run: npm ci
+      - name: Type, lint and workspace tests
+        run: npm run check

@@ -1,0 +1,2701 @@
+//! Update orchestration.
+//!
+//! Driven when the installer is launched as `Youtab-Setup.exe --update` (see
+//! `AppMode` in lib.rs). The desktop app hands off to us — it exits, then we:
+//!
+//!   1. wait for the old Youtab desktop process to fully exit (so both the
+//!      venv shim and packaged app.asar are free; otherwise `youtab update`
+//!      or repair bootstrap can race locked files),
+//!   2. run `youtab update --yes --gateway` (Python/repo update; this does NOT
+//!      rebuild apps/desktop by design — see cmd_update in youtab_agent_cli/main.py),
+//!   3. run `youtab desktop --build-only` (the rebuild step update skips),
+//!   4. launch the freshly-built desktop (reuses bootstrap::launch logic).
+//!
+//! We reuse the `BootstrapEvent` channel + the existing progress UI by
+//! emitting a synthetic multi-stage manifest (handoff → update → rebuild, plus
+//! an install stage on macOS). To the frontend an update looks like a short
+//! bootstrap, broken into the real operations run_update performs so the user
+//! sees discrete steps (with the live log underneath) instead of one bar.
+//!
+//! Cross-platform note: `youtab update` already handles macOS/Linux (git/pip).
+//! The only OS-specific bits here are the venv shim path (resolve_youtab) and
+//! the no-window creation flag — both already cfg-gated. Keep new logic
+//! OS-agnostic so the mac/linux port stays "fill in the paths".
+
+use std::env;
+use std::ffi::OsString;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use anyhow::{anyhow, Context, Result};
+use tauri::{AppHandle, Emitter};
+use tokio::io::BufReader;
+use tokio::process::Command;
+
+use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
+use crate::powershell::read_decoded_line;
+
+/// `youtab update` exit code meaning "another youtab process is holding the
+/// venv shim open / dirty precondition" — see _cmd_update_impl in
+/// youtab_agent_cli/main.py (sys.exit(2)). We surface a targeted message for this.
+const UPDATE_EXIT_CONCURRENT: i32 = 2;
+
+/// How long to wait for the old desktop process to release files under the
+/// install tree before giving up and letting `youtab update`'s own guard decide.
+const DESKTOP_EXIT_WAIT: Duration = Duration::from_secs(20);
+const DESKTOP_EXIT_POLL: Duration = Duration::from_millis(500);
+
+/// Guards against concurrent update runs. The frontend kicks `startUpdate()`
+/// from a mount effect, which can fire more than once (React strict-mode
+/// double-invokes effects in dev; a window reload or stray re-init can do it
+/// in prod). Two `run_update` tasks racing on `git stash` corrupt the working
+/// tree — one stashes the changes the other then can't find. Exactly one task
+/// may hold this flag at a time.
+static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Frontend → Rust: kick off the update flow. Mirrors `start_bootstrap`'s
+/// fire-and-forget shape; progress arrives on the `bootstrap` event channel.
+#[tauri::command]
+pub async fn start_update(app: AppHandle, channel: Option<String>) -> Result<(), String> {
+    if let Some(value) = &channel {
+        release_channel_from_args(["--channel", value.as_str()]).map_err(|e| e.to_string())?;
+    }
+    // Re-entrancy guard (see UPDATE_RUNNING). compare_exchange lets exactly one
+    // caller flip false→true; any concurrent caller no-ops instead of spawning
+    // a second racing update.
+    if UPDATE_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        // Already running: re-emit the manifest so a duplicate startUpdate()
+        // call (which resets the frontend store) can recover its stage list.
+        let target_app = if cfg!(target_os = "macos") {
+            target_app_from_args(std::env::args().skip(1))
+        } else {
+            None
+        };
+        emit(
+            &app,
+            BootstrapEvent::Manifest {
+                stages: update_stages(target_app.is_some()),
+                protocol_version: None,
+            },
+        );
+        return Ok(());
+    }
+    tokio::spawn(async move {
+        if let Err(err) = run_update(app.clone(), channel).await {
+            // run_update already emits a Failed event on the paths that matter;
+            // this catches anything that escaped. Emit defensively.
+            emit(
+                &app,
+                BootstrapEvent::Failed {
+                    stage: None,
+                    error: format!("{err:#}"),
+                },
+            );
+        }
+        UPDATE_RUNNING.store(false, Ordering::SeqCst);
+    });
+    Ok(())
+}
+
+/// RAII guard that owns the "update in progress" marker (see
+/// `paths::update_in_progress_marker`). Created at the top of `run_update`;
+/// its `Drop` removes the marker on EVERY exit path — success, early
+/// `return Err`, or a panic that unwinds through `run_update` — so a crashed
+/// or aborted updater can never permanently strand the marker and block
+/// future desktop launches. The marker payload is `{pid}\n{started_at_unix}`
+/// so the desktop's launch gate can detect a stale marker (dead PID / past a
+/// hard ceiling) and self-heal rather than wait forever.
+///
+/// The marker coordinates legacy CLI/Desktop readers; the separate OS-held
+/// sidecar excludes independent Setup processes throughout mutation. The legacy
+/// CLI marker protocol is retained (see `youtab_agent_cli/update_lock.py`); a
+/// confirmed live foreign marker still refuses the Setup claim.
+/// `acquire` therefore REFUSES when a live foreign owner holds it rather than
+/// overwriting — the pre-fix clobber is what let a dashboard `youtab update`
+/// keep running while install-mode bootstrap rewrote the tree underneath it.
+pub(crate) struct UpdateMarkerGuard {
+    path: PathBuf,
+    /// Identity exists only after successful publication; otherwise Drop holds
+    /// no claim and must leave unrelated marker entries untouched.
+    owned: Option<(MarkerIdentity, MarkerIdentity)>,
+    // Stable sidecar is never unlinked: unlinking would let waiters lock different inodes.
+    install_lock: std::sync::Mutex<Option<File>>,
+}
+
+/// File identity comes from the opened object, never from marker contents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MarkerIdentity(u64, u64);
+
+fn checked_marker_object(file: &File, directory: bool) -> io::Result<MarkerIdentity> {
+    let metadata = file.metadata()?;
+    if metadata.is_dir() != directory || (!directory && !metadata.is_file()) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unsafe marker object type",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != unsafe { libc::geteuid() }
+            || (directory && metadata.mode() & 0o022 != 0)
+            || (!directory && metadata.nlink() != 1)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unsafe marker owner or links",
+            ));
+        }
+        Ok(MarkerIdentity(metadata.dev(), metadata.ino()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT,
+        };
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            || (!directory && info.nNumberOfLinks != 1)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unsafe marker links",
+            ));
+        }
+        Ok(MarkerIdentity(
+            info.dwVolumeSerialNumber as u64,
+            ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
+        ))
+    }
+}
+
+fn open_marker_object(path: &Path, directory: bool) -> io::Result<(File, MarkerIdentity)> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+        options.custom_flags(
+            FILE_FLAG_OPEN_REPARSE_POINT
+                | if directory {
+                    FILE_FLAG_BACKUP_SEMANTICS
+                } else {
+                    0
+                },
+        );
+    }
+    let file = options.open(path)?;
+    let identity = checked_marker_object(&file, directory)?;
+    Ok((file, identity))
+}
+
+/// An explicitly selected home may be an alias. Freeze its physical target once;
+/// validate the followed selection against that target before touching a marker.
+/// Windows inherited-directory ACL confidentiality is not established by this check.
+fn canonical_marker_path(path: &Path) -> io::Result<(PathBuf, MarkerIdentity)> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "marker parent missing"))?;
+    std::fs::create_dir_all(parent)?;
+    #[cfg(unix)]
+    let selected = std::fs::metadata(parent)?;
+    #[cfg(windows)]
+    let selected_identity = {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+        // Follow the caller-selected alias for identity before canonicalization.
+        let selected = OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(parent)?;
+        checked_marker_object(&selected, true)?
+    };
+    let canonical = std::fs::canonicalize(parent)?;
+    let (_, identity) = open_marker_object(&canonical, true)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if MarkerIdentity(selected.dev(), selected.ino()) != identity {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "selected marker home changed",
+            ));
+        }
+    }
+    #[cfg(windows)]
+    {
+        if selected_identity != identity {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "selected marker home changed",
+            ));
+        }
+    }
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "marker name missing"))?;
+    Ok((canonical.join(name), identity))
+}
+
+fn write_marker_atomically(
+    path: &Path,
+    parent_identity: MarkerIdentity,
+    payload: &str,
+) -> io::Result<MarkerIdentity> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "marker parent missing"))?;
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    let identity = checked_marker_object(staged.as_file(), false)?;
+    staged.write_all(payload.as_bytes())?;
+    staged.as_file().sync_all()?;
+    if open_marker_object(parent, true)?.1 != parent_identity
+        || open_marker_object(staged.path(), false)?.1 != identity
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "marker namespace changed",
+        ));
+    }
+    // persist replaces the entry atomically without opening/truncating its target.
+    staged.persist(path).map_err(|error| error.error)?;
+    Ok(identity)
+}
+
+/// Never treat a marker older than this as a live update. Mirrors
+/// UPDATE_MARKER_MAX_AGE_MS in apps/desktop/electron/update-marker.ts and
+/// UPDATE_MARKER_MAX_AGE_SECONDS in youtab_agent_cli/update_lock.py — all three read
+/// this one file, so a shorter ceiling in any of them would steal a lock the
+/// others still consider live.
+const UPDATE_MARKER_MAX_AGE_SECS: u64 = 20 * 60;
+
+/// The pid + age of a confirmed-live update holding the marker.
+struct MarkerOwner {
+    pid: u32,
+    age_secs: u64,
+    failure: Option<String>,
+}
+
+/// Read the marker and report a live *foreign* owner, if any. `None` for every
+/// "no live update" case — absent, unreadable, malformed, dead pid, past the
+/// ceiling, or a marker whose pid is **this** process — matching
+/// `readLiveUpdateMarker` in the Electron gate. Never panics.
+///
+/// Self-PID is treated as non-ownership on purpose (#74761): since #50238 the
+/// desktop pre-writes this marker with the spawned updater's pid before the
+/// updater reaches `acquire`. Without the exclusion, `acquire` sees a live
+/// owner that is itself and aborts ("Another Youtab update is already
+/// running"), then the desktop relaunches and retries forever. A foreign live
+/// pid (e.g. a dashboard-spawned `youtab update`) still blocks.
+fn live_marker_owner(path: &Path) -> Option<MarkerOwner> {
+    let (file, _) = open_marker_object(path, false).ok()?;
+    if file.metadata().ok()?.len() > 4096 {
+        return None;
+    }
+    let mut raw = String::new();
+    file.take(4097).read_to_string(&mut raw).ok()?;
+    if raw.len() > 4096 {
+        return None;
+    }
+    let mut lines = raw.lines();
+    let pid: u32 = lines.next()?.trim().parse().ok()?;
+    let started_at: u64 = lines.next().unwrap_or("").trim().parse().unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let age_secs = now.saturating_sub(started_at);
+    if age_secs > UPDATE_MARKER_MAX_AGE_SECS || !pid_is_alive(pid) {
+        return None;
+    }
+    // Desktop `writeUpdateMarker(youtabHome, child.pid)` races ahead of us;
+    // adopt that pre-claim rather than refusing our own marker.
+    if pid == std::process::id() {
+        return None;
+    }
+    Some(MarkerOwner { pid, age_secs, failure: None })
+}
+
+/// True when a process with `pid` currently exists.
+#[cfg(windows)]
+fn pid_is_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            // Either the pid is gone or we lack rights to open it. A pid we
+            // can't inspect is treated as dead so an unopenable straggler
+            // can't wedge every future update.
+            return false;
+        }
+        let mut code: u32 = 0;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        CloseHandle(handle);
+        ok != 0 && code == STILL_ACTIVE as u32
+    }
+}
+
+#[cfg(not(windows))]
+fn pid_is_alive(pid: u32) -> bool {
+    // signal 0 delivers nothing; it only probes existence/permission.
+    // ESRCH => dead. EPERM => alive but owned by another user.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Claim a stable, non-replaced sidecar for this physical install home.
+/// Closing the descriptor releases the OS exclusion after success, error or crash.
+fn acquire_install_lock(path: &Path, parent_identity: MarkerIdentity) -> io::Result<File> {
+    let lock_path = path.with_extension("install-lock");
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.share_mode(0).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(&lock_path)?;
+    checked_marker_object(&file, false)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    if open_marker_object(path.parent().unwrap(), true)?.1 != parent_identity {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "install lock home changed"));
+    }
+    Ok(file)
+}
+
+impl UpdateMarkerGuard {
+    pub(crate) fn acquire_for_install(youtab_home: &Path) -> anyhow::Result<Self> {
+        let marker = youtab_home.join(".youtab-agent-runtime-update-in-progress");
+        Self::acquire(marker).map_err(|owner| match owner.failure {
+            Some(error) => anyhow!("could not exclusively lock Youtab installation: {error}"),
+            None => anyhow!("another Youtab update holds the install lock (PID {})", owner.pid),
+        })
+    }
+
+    /// OS exclusion is required before inspecting/adopting the Desktop PID hint.
+    /// Unsafe homes, contention and failed marker publication all abort mutation.
+    fn acquire(path: PathBuf) -> Result<Self, MarkerOwner> {
+        let failure = |error: io::Error| MarkerOwner {
+            pid: 0, age_secs: 0, failure: Some(error.to_string()),
+        };
+        let (path, parent_identity) = canonical_marker_path(&path).map_err(failure)?;
+        let install_lock = acquire_install_lock(&path, parent_identity).map_err(failure)?;
+        if let Some(owner) = live_marker_owner(&path) {
+            return Err(owner);
+        }
+        let pid = std::process::id();
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs()).unwrap_or(0);
+        let identity = write_marker_atomically(
+            &path, parent_identity, &format!("{pid}\n{started_at}"),
+        ).map_err(failure)?;
+        Ok(Self {
+            path, owned: Some((identity, parent_identity)),
+            install_lock: std::sync::Mutex::new(Some(install_lock)),
+        })
+    }
+
+    /// Release the marker as soon as every mutating stage has completed.
+    ///
+    /// The updater still owns a Tauri/Cocoa event loop while it relaunches the
+    /// desktop, and that loop can outlive `app.exit(0)`. Relying on `Drop`
+    /// alone therefore leaves a *successful* update looking active — a live
+    /// pid holding a fresh marker — which blocks desktop startup and every
+    /// other updater for the full age ceiling. Idempotent: `Drop` still runs
+    /// and tolerates an already-removed marker.
+    fn complete(&self) {
+        self.remove_owned_marker();
+        // Release even when the marker was removed/replaced by another actor.
+        self.install_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+    }
+
+    fn remove_owned_marker(&self) {
+        let Some((identity, parent_identity)) = self.owned else {
+            return;
+        };
+        let Some(parent) = self.path.parent() else {
+            return;
+        };
+        if open_marker_object(parent, true).map(|value| value.1).ok() != Some(parent_identity)
+            || open_marker_object(&self.path, false)
+                .map(|value| value.1)
+                .ok()
+                != Some(identity)
+        {
+            return;
+        }
+        if let Err(err) = std::fs::remove_file(&self.path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!("could not remove completed update marker");
+            }
+        }
+    }
+}
+
+/// The headless Setup broker releases its own executable before the staged
+/// child updates the installation. That child claims the normal install lock
+/// before acknowledging Desktop, so another Desktop cannot restart a backend
+/// in the gap before Tauri's update command begins.
+static STAGED_CHILD_LOCK: std::sync::OnceLock<std::sync::Mutex<Option<(PathBuf, UpdateMarkerGuard)>>> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn hold_staged_child_install_lock(home: &Path) -> Result<()> {
+    let slot = STAGED_CHILD_LOCK.get_or_init(|| std::sync::Mutex::new(None));
+    let mut held = slot.lock().map_err(|_| anyhow!("staged update lock state unavailable"))?;
+    if held.is_some() { return Err(anyhow!("staged update lock already held")); }
+    let lock = UpdateMarkerGuard::acquire_for_install(home)?;
+    *held = Some((home.to_owned(), lock));
+    Ok(())
+}
+
+pub(crate) fn release_staged_child_install_lock() {
+    if let Some(slot) = STAGED_CHILD_LOCK.get() {
+        if let Ok(mut held) = slot.lock() { held.take(); }
+    }
+}
+
+fn take_staged_child_install_lock(home: &Path) -> Result<Option<UpdateMarkerGuard>> {
+    let Some(slot) = STAGED_CHILD_LOCK.get() else { return Ok(None); };
+    let mut held = slot.lock().map_err(|_| anyhow!("staged update lock state unavailable"))?;
+    match held.as_ref() {
+        Some((selected, _)) if selected == home => Ok(held.take().map(|(_, lock)| lock)),
+        Some(_) => Err(anyhow!("staged update lock belongs to a different installation")),
+        None => Ok(None),
+    }
+}
+
+impl Drop for UpdateMarkerGuard {
+    fn drop(&mut self) {
+        self.complete();
+    }
+}
+
+async fn run_update(app: AppHandle, channel: Option<String>) -> Result<()> {
+    if let Some(base) = option_env!("RELEASE_BASE_URL") {
+        let home = release_update_home()?;
+        let selected = match channel {Some(value) => value, None => release_channel_for_install(&home.join("youtab-agent-runtime"))?};
+        return run_artifact_update(app, base, &selected, home).await;
+    }
+    let youtab_home = crate::paths::youtab_home();
+    let install_root = youtab_home.join("youtab-agent-runtime");
+
+    // Mutual exclusion (#50238): publish an "update in progress" marker for the
+    // entire duration of this update. A desktop instance the user relaunches
+    // mid-update consults this before spawning its own local backend — without
+    // it, that backend re-locks the venv shim, our `force_kill_other_youtab`
+    // straggler-cleanup kills it, and the relaunch/kill cycle loops. The guard
+    // removes the marker on every exit path (incl. early returns / panics).
+    //
+    // The same marker is the cross-process update lock (youtab_agent_cli/
+    // update_lock.py claims it too), so a live foreign owner means another
+    // updater — most often a dashboard-spawned `youtab update` — is already
+    // mutating this checkout. Refuse instead of running a second one over it.
+    let _update_marker = match UpdateMarkerGuard::acquire(
+        crate::paths::update_in_progress_marker(),
+    ) {
+        Ok(guard) => guard,
+        Err(owner) => {
+            let mins = owner.age_secs / 60;
+            let secs = owner.age_secs % 60;
+            let elapsed = if mins > 0 {
+                format!("{mins}m {secs}s")
+            } else {
+                format!("{secs}s")
+            };
+            let msg = owner.failure.unwrap_or_else(|| format!(
+                "Another Youtab update is already running (PID {}, started {} ago). \
+                 Wait for it to finish, or close the window or dashboard tab that \
+                 started it, then try again.",
+                owner.pid, elapsed
+            ));
+            emit(
+                &app,
+                BootstrapEvent::Failed {
+                    stage: None,
+                    error: msg.clone(),
+                },
+            );
+            return Err(anyhow!(msg));
+        }
+    };
+
+    let update_branch = update_branch_from_args(std::env::args().skip(1))
+        .or_else(|| option_env_string("BUILD_PIN_BRANCH"))
+        .unwrap_or_else(|| "main".to_string());
+    let target_app = if cfg!(target_os = "macos") {
+        target_app_from_args(std::env::args().skip(1))
+    } else {
+        None
+    };
+
+    let youtab = resolve_youtab(&install_root).ok_or_else(|| {
+        let msg = format!(
+            "Could not find the youtab CLI under {}. Is Youtab installed? \
+             Re-run the installer to repair the install.",
+            install_root.display()
+        );
+        emit(
+            &app,
+            BootstrapEvent::Failed {
+                stage: None,
+                error: msg.clone(),
+            },
+        );
+        anyhow!(msg)
+    })?;
+
+    // Synthetic manifest so the existing progress UI renders our stages.
+    emit(
+        &app,
+        BootstrapEvent::Manifest {
+            stages: update_stages(target_app.is_some()),
+            protocol_version: None,
+        },
+    );
+
+    // ---- stage 1: wait for the old desktop to die ------------------------
+    // The desktop exec'd us then called app.exit(), but process teardown is
+    // async on Windows. If it still holds the venv shim, `youtab update`
+    // aborts with exit 2. If it still holds the packaged app.asar,
+    // install.ps1's repair/re-clone path cannot move/remove the install tree.
+    // Give both handles a bounded window to clear. Surfaced as its own stage
+    // (rather than a silent pre-step) so a slow close / force-kill reads as
+    // real progress instead of a frozen first bar.
+    let started = Instant::now();
+    emit_stage(&app, "handoff", StageState::Running, None, None);
+    wait_for_install_locks_free(&install_root, &app, "handoff").await;
+    emit_stage(
+        &app,
+        "handoff",
+        StageState::Succeeded,
+        Some(started.elapsed().as_millis() as u64),
+        None,
+    );
+
+    // ---- stage 2: youtab update -----------------------------------------
+    // Pass --branch so `youtab update` targets the branch this installer was
+    // built/pinned against (BUILD_PIN_BRANCH), NOT its built-in default of
+    // `main`. The install was a detached-HEAD checkout of a specific commit;
+    // without --branch, `youtab update` switches the checkout to `main` (a
+    // divergent branch that may not even have the desktop CLI command), then
+    // reports "already up to date" against the wrong branch. The desktop
+    // detected the update against this same branch, so we must update against
+    // it too.
+    emit_log(
+        &app,
+        Some("update"),
+        LogStream::Stdout,
+        &format!("[update] updating against branch {update_branch}"),
+    );
+    let child_env = update_child_env(&install_root);
+    let mut update_args: Vec<String> =
+        vec!["update".into(), "--yes".into(), "--gateway".into()];
+    // --force skips `youtab update`'s Windows running-exe guard (which would
+    // `sys.exit(2)` and dead-end the handoff). By contract the desktop has
+    // already exited and waited for the install locks to clear before launching
+    // us, and wait_for_install_locks_free below force-kills any straggler — so by the
+    // time `youtab update` runs there is no legitimate youtab.exe to protect,
+    // and the guard would only produce a false "Youtab is still running" stop.
+    //
+    // NOTE: --force does NOT bypass the venv-python holder guard (that needs
+    // an explicit `--force-venv`, which we deliberately do not pass). Our lock
+    // probe only checks the youtab.exe shim and app.asar, so an external venv
+    // python holding a native .pyd (a user terminal, an unmanaged gateway)
+    // could still be alive here — mutating the venv under it would strand the
+    // install half-updated. If that guard fires, it exits 2 and the match arm
+    // below surfaces the correct "close all Youtab windows" message.
+    update_args.push("--force".into());
+    update_args.push("--branch".into());
+    update_args.push(update_branch);
+
+    emit_stage(&app, "update", StageState::Running, None, None);
+    let started = Instant::now();
+    let mut update = run_streamed(
+        &app,
+        &youtab,
+        &update_args,
+        &install_root,
+        &child_env,
+        Some("update"),
+    )
+    .await?;
+
+    // Retry-once for the update-boundary crash. `youtab update` lazily imports
+    // the FRESHLY PULLED modules, but the dependency-install step still runs the
+    // already-in-memory pre-pull code for one invocation. A release that changed
+    // an updater-path contract across that boundary (e.g. #39780's `_UvResult`,
+    // whose `__iter__` injected a bool into the argv and crashed Windows
+    // `list2cmdline` with `TypeError: sequence item 1: expected str instance,
+    // bool found`, fixed in #39820) therefore kills the FIRST update on the
+    // parked population — even though the fix is already on disk by then. A
+    // second `youtab update` runs clean because the now-current module is loaded
+    // from the start. Rather than make the parked user click Update twice (and
+    // stare at a scary crash first), retry once automatically. Skip the retry
+    // for the concurrent-instance guard (exit 2) — that's a "close Youtab" state
+    // a retry can't fix.
+    if !matches!(update.exit_code, Some(0) | Some(UPDATE_EXIT_CONCURRENT)) {
+        emit_log(
+            &app,
+            Some("update"),
+            LogStream::Stdout,
+            "[update] first update attempt failed; retrying once (the fix it just \
+             pulled loads on the second run)…",
+        );
+        update = run_streamed(
+            &app,
+            &youtab,
+            &update_args,
+            &install_root,
+            &child_env,
+            Some("update"),
+        )
+        .await?;
+    }
+    let update_ms = started.elapsed().as_millis() as u64;
+
+    match update.exit_code {
+        Some(0) => {
+            emit_stage(&app, "update", StageState::Succeeded, Some(update_ms), None);
+        }
+        Some(code) if code == UPDATE_EXIT_CONCURRENT => {
+            let msg = "Youtab is still running. Close all Youtab windows and try \
+                       the update again."
+                .to_string();
+            emit_stage(
+                &app,
+                "update",
+                StageState::Failed,
+                Some(update_ms),
+                Some(msg.clone()),
+            );
+            emit(
+                &app,
+                BootstrapEvent::Failed {
+                    stage: Some("update".into()),
+                    error: msg.clone(),
+                },
+            );
+            return Err(anyhow!(msg));
+        }
+        other => {
+            let msg = format!(
+                "youtab update failed (exit {:?}). See {} for details.",
+                other,
+                crate::paths::youtab_home()
+                    .join("logs")
+                    .join("update.log")
+                    .display()
+            );
+            emit_stage(
+                &app,
+                "update",
+                StageState::Failed,
+                Some(update_ms),
+                Some(msg.clone()),
+            );
+            emit(
+                &app,
+                BootstrapEvent::Failed {
+                    stage: Some("update".into()),
+                    error: msg.clone(),
+                },
+            );
+            return Err(anyhow!(msg));
+        }
+    }
+
+    // ---- stage 3: youtab desktop --build-only ----------------------------
+    // `youtab update` deliberately does NOT build apps/desktop (it installs
+    // repo-root deps with --workspaces=false). This is the rebuild it skips.
+    emit_stage(&app, "rebuild", StageState::Running, None, None);
+    let started = Instant::now();
+    let rebuild_args: Vec<String> = vec!["desktop".into(), "--build-only".into()];
+    let mut rebuild = run_streamed(
+        &app,
+        &youtab,
+        &rebuild_args,
+        &install_root,
+        &child_env,
+        Some("rebuild"),
+    )
+    .await?;
+
+    // Retry-once: the first `--build-only` can return nonzero on a still-settling
+    // post-update tree or a network-blocked Electron fetch that our self-heal
+    // repaired mid-run. A second attempt then builds clean off the healed dist
+    // (the content-hash stamp makes it a near-no-op when the first actually
+    // succeeded). Without this the updater bails here and never reaches the
+    // relaunch below — the app updates but doesn't restart. Matches the
+    // retry-once `youtab update` already does above, and `youtab update`'s own
+    // desktop rebuild in cmd_update.
+    if rebuild_needs_retry(rebuild.exit_code) {
+        emit_log(
+            &app,
+            Some("rebuild"),
+            LogStream::Stdout,
+            "[rebuild] first desktop rebuild failed; retrying once (a self-healed \
+             Electron download builds clean on the second run)…",
+        );
+        rebuild = run_streamed(
+            &app,
+            &youtab,
+            &rebuild_args,
+            &install_root,
+            &child_env,
+            Some("rebuild"),
+        )
+        .await?;
+    }
+    let rebuild_ms = started.elapsed().as_millis() as u64;
+
+    if rebuild.exit_code != Some(0) {
+        let msg = format!(
+            "Rebuilding the desktop app failed (exit {:?}). The update was \
+             applied but the app could not be rebuilt; run `youtab desktop` \
+             from a terminal to see the error.",
+            rebuild.exit_code
+        );
+        emit_stage(
+            &app,
+            "rebuild",
+            StageState::Failed,
+            Some(rebuild_ms),
+            Some(msg.clone()),
+        );
+        emit(
+            &app,
+            BootstrapEvent::Failed {
+                stage: Some("rebuild".into()),
+                error: msg.clone(),
+            },
+        );
+        return Err(anyhow!(msg));
+    }
+    emit_stage(&app, "rebuild", StageState::Succeeded, Some(rebuild_ms), None);
+
+    let launch_target = if let Some(target_app) = target_app {
+        let started = Instant::now();
+        emit_stage(&app, "install", StageState::Running, None, None);
+        match install_macos_app_update(&app, &install_root, &target_app).await {
+            Ok(installed_app) => {
+                emit_stage(
+                    &app,
+                    "install",
+                    StageState::Succeeded,
+                    Some(started.elapsed().as_millis() as u64),
+                    None,
+                );
+                Some(installed_app)
+            }
+            Err(err) => {
+                let msg = format!("{err:#}");
+                emit_stage(
+                    &app,
+                    "install",
+                    StageState::Failed,
+                    Some(started.elapsed().as_millis() as u64),
+                    Some(msg.clone()),
+                );
+                emit(
+                    &app,
+                    BootstrapEvent::Failed {
+                        stage: Some("install".into()),
+                        error: msg.clone(),
+                    },
+                );
+                return Err(anyhow!(msg));
+            }
+        }
+    } else {
+        None
+    };
+
+    // ---- done: signal complete, then launch the fresh desktop ------------
+    emit(
+        &app,
+        BootstrapEvent::Complete {
+            install_root: install_root.to_string_lossy().into_owned(),
+            marker: None,
+        },
+    );
+    // Every install-tree mutation is finished. Release the lock BEFORE the
+    // relaunch: this process can stay wedged in its native event loop even
+    // after a successful app.exit(), and a live pid on a fresh marker would
+    // make a completed update look active — blocking desktop startup and
+    // every other updater until the age ceiling expires.
+    _update_marker.complete();
+
+    if let Some(target_app) = launch_target {
+        if let Err(err) = launch_macos_app_and_exit(&app, &target_app).await {
+            emit_log(
+                &app,
+                None,
+                LogStream::Stderr,
+                &format!("[update] could not auto-launch desktop: {err}. Launch Youtab manually."),
+            );
+        }
+    } else if let Err(err) =
+        crate::bootstrap::launch_youtab_desktop(app.clone(), install_root.to_string_lossy().into_owned()).await
+    {
+        // Launch failed: don't hard-fail the update (it succeeded); surface a
+        // log line so the success screen can still tell the user to launch
+        // manually.
+        emit_log(
+            &app,
+            None,
+            LogStream::Stdout,
+            &format!("[update] could not auto-launch desktop: {err}. Launch Youtab manually."),
+        );
+    }
+
+    // The launch helpers normally request exit themselves, but their failure
+    // paths must still close a successful updater. A native event loop can
+    // ignore that graceful request, so arm a process-exit fallback now that
+    // all update state and the marker have been settled.
+    exit_after_success(&app);
+    Ok(())
+}
+
+async fn run_artifact_update(app: AppHandle, base: &str, channel: &str, home: PathBuf) -> Result<()> {
+    let root = home.join("youtab-agent-runtime");
+    // Retain admission before any lock/recovery mutation for both branches.
+    let (private_namespace, lock) = prepare_artifact_update(&home)?;
+    let approved = approved_artifact_target(base, &root, channel).await?;
+    if option_env!("BUILD_PIN_COMMIT") != Some(approved.sha.as_str()) {
+        return Err(anyhow!("Setup does not match the selected release; check for updates again"));
+    }
+    let running = std::env::current_exe()?;
+    if crate::paths::installer_sha256(&running)? != approved.setup_sha256 {
+        return Err(anyhow!("Setup hash does not match the selected release"));
+    }
+    if !approved.is_newer {
+        crate::bootstrap::replace_setup_only(&root, &running, &approved.setup_sha256)?;
+        require_artifact_setup(&home, &std::env::current_exe()?)?;
+        if let Some(namespace) = &private_namespace {
+            namespace.revalidate().map_err(|reason| anyhow!("private installation namespace changed: {reason}"))?;
+        }
+        let marker = persist_selected_channel(&root, &approved.installed_marker, channel, &approved.sha, &approved.setup_sha256)?;
+        emit(&app, BootstrapEvent::Complete {
+            install_root: root.to_string_lossy().into_owned(), marker: Some(marker),
+        });
+        return Ok(());
+    }
+    crate::bootstrap::run_artifact_update(app.clone(), approved.sha, channel.to_owned(), lock).await?;
+    if let Err(err) = crate::bootstrap::launch_youtab_desktop(app.clone(), root.to_string_lossy().into_owned()).await {
+        emit_log(&app, None, LogStream::Stderr, &format!("[update] launch after verified install failed: {err}"));
+    }
+    exit_after_success(&app);
+    Ok(())
+}
+
+fn release_update_home() -> Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        let selected = crate::paths::customer_home()
+            .map_err(|reason| anyhow!("customer home selection refused: {reason}"))?;
+        Ok(selected.path().to_owned())
+    }
+    #[cfg(not(windows))]
+    { Ok(crate::paths::youtab_home()) }
+}
+
+/// Retain admission until lock/recovery/channel mutation finishes.
+fn prepare_artifact_update(home: &Path) -> Result<(Option<crate::update_coordination::PrivateCodeNamespace>, UpdateMarkerGuard)> {
+    let private_namespace = if cfg!(windows) {
+        Some(crate::update_coordination::admit_private_code_namespace(home)
+            .map_err(|reason| anyhow!("private installation namespace refused: {reason}; preserving migration required"))?)
+    } else { None };
+    let lock = match take_staged_child_install_lock(home)? {
+        Some(lock) => lock,
+        None => UpdateMarkerGuard::acquire_for_install(home)?,
+    };
+    if let Some(namespace) = &private_namespace {
+        namespace.revalidate().map_err(|reason| anyhow!("private installation namespace changed: {reason}"))?;
+    }
+    crate::bootstrap::recover_artifact_transaction(&home.join("youtab-agent-runtime"))?;
+    Ok((private_namespace, lock))
+}
+
+fn require_update_coordination_protocol(latest: &serde_json::Value, immutable: &serde_json::Value) -> Result<()> {
+    for manifest in [latest, immutable] {
+        if manifest.get("update_coordination_protocol").and_then(serde_json::Value::as_u64) != Some(1) {
+            return Err(anyhow!("release requires integer update_coordination_protocol 1"));
+        }
+    }
+    if latest.get("update_coordination_protocol") != immutable.get("update_coordination_protocol") {
+        return Err(anyhow!("latest and immutable release disagree on update_coordination_protocol"));
+    }
+    Ok(())
+}
+
+fn persist_selected_channel(root: &Path, original: &serde_json::Value, channel: &str, source: &str, setup_hash: &str) -> Result<serde_json::Value> {
+    use std::io::Write;
+    release_channel_from_args(["--channel", channel])?;
+    let marker_path = root.join(".youtab-agent-runtime-bootstrap-complete");
+    if root.is_symlink() || marker_path.is_symlink() {return Err(anyhow!("unsafe installation metadata"));}
+    let current: serde_json::Value = serde_json::from_slice(&std::fs::read(&marker_path)?)?;
+    if &current != original {return Err(anyhow!("installation changed during channel selection"));}
+    let mut next = current;
+    let object = next.as_object_mut().ok_or_else(|| anyhow!("invalid installation metadata"))?;
+    object.insert("releaseChannel".into(), serde_json::json!(channel));
+    object.insert("channelSelectedAt".into(), serde_json::json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos().to_string()));
+    object.insert("setupSourceSha".into(), serde_json::json!(source));
+    object.insert("setupSha256".into(), serde_json::json!(setup_hash));
+    let mut temporary = tempfile::NamedTempFile::new_in(root)?;
+    temporary.write_all(&serde_json::to_vec_pretty(&next)?)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(&marker_path).map_err(|error| anyhow!("could not persist selected channel: {}", error.error))?;
+    Ok(next)
+}
+
+fn require_artifact_setup(home: &Path, running: &Path) -> Result<()> {
+    let expected = crate::paths::installer_sha256(running)?;
+    crate::paths::verify_installer(&crate::paths::installer_dest_in(home), &expected)
+        .context("required Setup missing or invalid; update cannot complete")
+}
+
+pub(crate) struct ApprovedArtifactTarget {
+    pub sha: String,
+    pub is_newer: bool,
+    pub setup_sha256: String,
+    installed_marker: serde_json::Value,
+}
+
+pub(crate) async fn approved_artifact_target(base: &str, root: &Path, channel: &str) -> Result<ApprovedArtifactTarget> {
+    release_channel_from_args(["--channel", channel])?;
+    let marker_path = root.join(".youtab-agent-runtime-bootstrap-complete");
+    let marker: serde_json::Value = serde_json::from_slice(&std::fs::read(&marker_path)?)?;
+    if marker.get("releaseBaseUrl").and_then(serde_json::Value::as_str) != Some(base) {
+        return Err(anyhow!("installed Runtime is not bound to this artifact channel"));
+    }
+    let installed_sequence = marker.get("releaseSequence")
+        .and_then(serde_json::Value::as_u64).filter(|n| *n > 0)
+        .ok_or_else(|| anyhow!("legacy Runtime install has no release sequence; use a new Setup to migrate"))?;
+    let installed_sha = marker.get("pinnedCommit").and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("installed Runtime has no exact source SHA"))?;
+    if installed_sha.len() != 40 || !installed_sha.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return Err(anyhow!("installed Runtime marker has invalid exact source SHA"));
+    }
+    let installed_hash = marker.get("artifactSha256").and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("installed Runtime has no artifact hash"))?;
+    if !release_hash(&marker, "artifactSha256") {
+        return Err(anyhow!("installed Runtime marker has invalid artifact hash"));
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let latest: serde_json::Value = read_release_json(&client, &format!("{base}/channels/{channel}/latest.json")).await?;
+    let target_sha = release_sha(&latest)?;
+    let manifest_url = format!("{base}/{target_sha}/manifest.json");
+    if latest.get("manifest_url").and_then(serde_json::Value::as_str) != Some(manifest_url.as_str()) {
+        return Err(anyhow!("latest release points outside its immutable manifest"));
+    }
+    let immutable = read_release_json(&client, &manifest_url).await?;
+    require_update_coordination_protocol(&latest, &immutable)?;
+    for key in ["version", "release_sequence", "source_sha", "artifact_url", "sha256",
+        "install_script_url", "install_script_sha256", "created_at", "platform", "architecture", "format",
+        "setup_url", "setup_sha256", "setup_size", "setup_source_sha", "updater_protocol", "update_coordination_protocol"] {
+        if latest.get(key) != immutable.get(key) {
+            return Err(anyhow!("latest and immutable release disagree on {key}"));
+        }
+    }
+    let expected_archive = format!("{base}/{target_sha}/youtab-runtime-{target_sha}.zip");
+    let expected_script = format!("{base}/{target_sha}/install-{target_sha}.ps1");
+    let expected_setup = format!("{base}/{target_sha}/Youtab-Setup-{target_sha}.exe");
+    if immutable.get("artifact_url").and_then(serde_json::Value::as_str) != Some(expected_archive.as_str())
+        || immutable.get("install_script_url").and_then(serde_json::Value::as_str) != Some(expected_script.as_str())
+        || immutable.get("platform").and_then(serde_json::Value::as_str) != Some("windows")
+        || immutable.get("architecture").and_then(serde_json::Value::as_str) != Some("x64")
+        || immutable.get("format").and_then(serde_json::Value::as_str) != Some("zip")
+        || immutable.get("setup_url").and_then(serde_json::Value::as_str) != Some(expected_setup.as_str())
+        || immutable.get("setup_source_sha").and_then(serde_json::Value::as_str) != Some(target_sha)
+        || immutable.get("updater_protocol").and_then(serde_json::Value::as_u64) != Some(1)
+        || immutable.get("update_coordination_protocol").and_then(serde_json::Value::as_u64) != Some(1)
+        || !immutable.get("setup_size").and_then(serde_json::Value::as_u64).is_some_and(|n| n > 0 && n <= 256 * 1024 * 1024)
+        || !release_hash(&immutable, "setup_sha256")
+        || !release_hash(&immutable, "sha256") || !release_hash(&immutable, "install_script_sha256") {
+        return Err(anyhow!("immutable Runtime release has invalid artifact metadata"));
+    }
+    let next_sequence = immutable.get("release_sequence").and_then(serde_json::Value::as_u64)
+        .filter(|n| *n > 0).ok_or_else(|| anyhow!("invalid release sequence"))?;
+    if next_sequence < installed_sequence {
+        return Err(anyhow!("Runtime artifact downgrade is forbidden"));
+    }
+    if next_sequence == installed_sequence {
+        if target_sha != installed_sha || immutable["sha256"].as_str() != Some(installed_hash) {
+            return Err(anyhow!("release sequence was reused for different content"));
+        }
+    }
+    Ok(ApprovedArtifactTarget {
+        sha: target_sha.to_string(), is_newer: next_sequence > installed_sequence,
+        setup_sha256: immutable["setup_sha256"].as_str().unwrap().to_owned(),
+        installed_marker: marker,
+    })
+}
+
+/// Explicit, bounded channel selection. Invalid or duplicate flags fail closed.
+pub(crate) fn release_channel_from_args<I, S>(args: I) -> Result<String>
+where I: IntoIterator<Item = S>, S: AsRef<str> {
+    let values: Vec<String> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
+    let mut channel: Option<String> = None;
+    let mut index = 0;
+    while index < values.len() {
+        let arg = &values[index];
+        let candidate = if arg == "--channel" {
+            index += 1;
+            Some(values.get(index).ok_or_else(|| anyhow!("missing release channel"))?.as_str())
+        } else { arg.strip_prefix("--channel=") };
+        if let Some(value) = candidate {
+            if channel.is_some() || !matches!(value, "pilot" | "stable") {
+                return Err(anyhow!("invalid or duplicate release channel"));
+            }
+            channel = Some(value.to_owned());
+        }
+        index += 1;
+    }
+    Ok(channel.unwrap_or_else(|| "stable".to_owned()))
+}
+
+pub(crate) fn release_channel_for_install(root: &Path) -> Result<String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|v| v == "--channel" || v.starts_with("--channel=")) {
+        return release_channel_from_args(args);
+    }
+    let marker = root.join(".youtab-agent-runtime-bootstrap-complete");
+    if root.is_symlink() || marker.is_symlink() {return Err(anyhow!("unsafe installation metadata"));}
+    if !marker.exists() {return Ok("stable".to_owned());}
+    let document: serde_json::Value = serde_json::from_slice(&std::fs::read(marker)?)?;
+    let stored = match document.get("releaseChannel") {
+        None => "stable",
+        Some(value) => value.as_str().ok_or_else(|| anyhow!("invalid stored release channel"))?,
+    };
+    release_channel_from_args(["--channel", stored])
+}
+
+pub(crate) async fn verify_setup_channel(base: &str, channel: &str) -> Result<()> {
+    release_channel_from_args(["--channel", channel])?;
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).redirect(reqwest::redirect::Policy::none()).build()?;
+    let latest = read_release_json(&client, &format!("{base}/channels/{channel}/latest.json"))
+        .await.map_err(|error| {
+            if error.downcast_ref::<reqwest::Error>()
+                .is_some_and(|http| http.status() == Some(reqwest::StatusCode::NOT_FOUND)) {
+                anyhow!(crate::events::SETUP_CHANNEL_UNPUBLISHED)
+            } else { error }
+        })?;
+    let sha = release_sha(&latest)?;
+    let manifest_url = format!("{base}/{sha}/manifest.json");
+    if latest.get("manifest_url").and_then(serde_json::Value::as_str) != Some(manifest_url.as_str()) {
+        return Err(anyhow!("selected channel manifest binding is invalid"));
+    }
+    let immutable = read_release_json(&client, &manifest_url).await?;
+    require_update_coordination_protocol(&latest, &immutable)?;
+    let mut expected = immutable.clone();
+    expected.as_object_mut().ok_or_else(|| anyhow!("invalid immutable manifest"))?.insert("manifest_url".to_owned(), serde_json::json!(manifest_url));
+    if expected != latest || option_env!("BUILD_PIN_COMMIT") != Some(sha) {
+        return Err(anyhow!(crate::events::SETUP_CHANNEL_UNPUBLISHED));
+    }
+    let setup = format!("{base}/{sha}/Youtab-Setup-{sha}.exe");
+    if immutable.get("setup_source_sha").and_then(serde_json::Value::as_str) != Some(sha)
+        || immutable.get("setup_url").and_then(serde_json::Value::as_str) != Some(setup.as_str())
+        || immutable.get("updater_protocol").and_then(serde_json::Value::as_u64) != Some(1)
+        || immutable.get("update_coordination_protocol").and_then(serde_json::Value::as_u64) != Some(1)
+        || immutable.get("setup_sha256").and_then(serde_json::Value::as_str) != Some(crate::paths::installer_sha256(&std::env::current_exe()?)?.as_str()) {
+        return Err(anyhow!(crate::events::SETUP_CHANNEL_UNPUBLISHED));
+    }
+    Ok(())
+}
+
+fn release_sha(value: &serde_json::Value) -> Result<&str> {
+    let sha = value.get("source_sha").and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("release lacks source_sha"))?;
+    if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        return Err(anyhow!("release source_sha must be an exact lowercase SHA"));
+    }
+    Ok(sha)
+}
+
+fn release_hash(value: &serde_json::Value, key: &str) -> bool {
+    value.get(key).and_then(serde_json::Value::as_str)
+        .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+}
+
+async fn read_release_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Value> {
+    let mut response = client.get(url).send().await?.error_for_status()?;
+    if response.status() != reqwest::StatusCode::OK {return Err(anyhow!("release metadata did not return HTTP 200"));}
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len() + chunk.len() > 64 * 1024 {return Err(anyhow!("release metadata exceeds size limit"));}
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+/// Ask the app to exit, with a hard `process::exit` fallback for a native
+/// event loop that ignores the graceful request. Without it a finished updater
+/// can linger as a live pid forever.
+fn exit_after_success(app: &AppHandle) {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        tracing::warn!("graceful updater exit timed out; forcing process exit");
+        std::process::exit(0);
+    });
+    app.exit(0);
+}
+
+/// Poll until the venv shim AND packaged desktop app bundle are no longer locked
+/// (Windows) or a bounded timeout elapses. On non-Windows this is a short fixed
+/// grace since file locking isn't the failure mode there.
+pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHandle, stage: &str) {
+    let lock_targets = install_lock_probe_paths(install_root);
+    let deadline = Instant::now() + DESKTOP_EXIT_WAIT;
+
+    emit_log(app, Some(stage), LogStream::Stdout, "[handoff] waiting for Youtab to exit…");
+
+    loop {
+        let locked = locked_paths(&lock_targets);
+        if locked.is_empty() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            // Last resort: a backend youtab.exe (or the desktop Youtab.exe
+            // itself) is still holding one of the update-sensitive files. The
+            // desktop should have reaped its tree before handing off, but
+            // SIGTERM races / detached grandchildren / AV handles can leave a
+            // straggler. Rather than "proceed anyway" straight into uv's
+            // "Access is denied" or install.ps1's locked app.asar failure,
+            // force-kill every Youtab.exe except ourselves, then give the OS a
+            // beat to unload the image.
+            emit_log(
+                app,
+                Some(stage),
+                LogStream::Stdout,
+                &format!(
+                    "[handoff] Youtab still holding install files ({}); force-killing stragglers…",
+                    format_locked_paths(&locked)
+                ),
+            );
+            force_kill_other_youtab();
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            let locked_after_kill = locked_paths(&lock_targets);
+            if locked_after_kill.is_empty() {
+                emit_log(
+                    app,
+                    Some(stage),
+                    LogStream::Stdout,
+                    "[handoff] install files freed after force-kill",
+                );
+            } else {
+                emit_log(
+                    app,
+                    Some(stage),
+                    LogStream::Stdout,
+                    &format!(
+                        "[handoff] install files still locked ({}); proceeding (--force + quarantine will handle it)",
+                        format_locked_paths(&locked_after_kill)
+                    ),
+                );
+            }
+            return;
+        }
+        tokio::time::sleep(DESKTOP_EXIT_POLL).await;
+    }
+}
+
+/// Artifact replacement must not move a live install tree. Wait for the
+/// Desktop handoff using the same lock probes as the existing updater, but
+/// refuse rather than killing an unrelated Youtab process by image name.
+pub(crate) async fn require_install_locks_free(install_root: &Path) -> anyhow::Result<()> {
+    let targets = install_lock_probe_paths(install_root);
+    let deadline = Instant::now() + DESKTOP_EXIT_WAIT;
+    loop {
+        if locked_paths(&targets).is_empty() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow::anyhow!("Youtab still holds install files; close it before retrying"));
+        }
+        tokio::time::sleep(DESKTOP_EXIT_POLL).await;
+    }
+}
+
+fn install_lock_probe_paths(install_root: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![venv_youtab(install_root)];
+    paths.extend(desktop_app_payload_paths(install_root));
+    paths
+}
+
+fn desktop_app_payload_paths(install_root: &Path) -> Vec<PathBuf> {
+    let release = install_root.join("apps").join("desktop").join("release");
+    if cfg!(target_os = "windows") {
+        vec![
+            release.join("win-unpacked").join("resources").join("app.asar"),
+            release.join("win-arm64-unpacked").join("resources").join("app.asar"),
+        ]
+    } else if cfg!(target_os = "macos") {
+        vec![
+            release.join("mac").join("Youtab.app").join("Contents").join("Resources").join("app.asar"),
+            release.join("mac-arm64").join("Youtab.app").join("Contents").join("Resources").join("app.asar"),
+        ]
+    } else {
+        vec![release.join("linux-unpacked").join("resources").join("app.asar")]
+    }
+}
+
+fn locked_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+    paths.iter().filter(|p| is_locked(p)).cloned().collect()
+}
+
+fn format_locked_paths(paths: &[PathBuf]) -> String {
+    paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+}
+
+/// Force-kill any `youtab.exe` other than this process. Windows-only; a no-op
+/// elsewhere (POSIX has no mandatory-lock contention). We can't selectively
+/// target "the backend" by PID here — the desktop already exited and we never
+/// knew its children — so we kill the whole `youtab.exe` image tree via
+/// taskkill, excluding our own PID.
+///
+/// Safe w.r.t. our own update child: this runs inside the install-lock wait,
+/// which completes BEFORE we spawn `venv\Scripts\youtab.exe update`. And a
+/// desktop the user relaunches mid-update will NOT have spawned a backend —
+/// `startYoutab()` in the desktop gates local-backend startup on our
+/// update-in-progress marker and parks until we finish (#50238). So the only
+/// youtab.exe images here are stragglers from the old desktop — exactly what
+/// we want gone. (`/FI PID ne <self>` also spares this Tauri process, though it
+/// isn't named youtab.exe.)
+fn force_kill_other_youtab() {
+    if !cfg!(target_os = "windows") {
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let my_pid = std::process::id();
+        // /FI excludes our own PID; /T kills the tree; /F forces.
+        let _ = std::process::Command::new("taskkill")
+            .args([
+                "/F",
+                "/T",
+                "/IM",
+                "youtab.exe",
+                "/FI",
+                &format!("PID ne {my_pid}"),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+/// Best-effort lock probe: try to open the file for read+write. On Windows an
+/// exclusively-held running .exe refuses the open with a sharing violation.
+/// On Unix this almost always succeeds (no mandatory locking), which is fine —
+/// the venv-shim contention is a Windows-only problem.
+fn is_locked(path: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    match std::fs::OpenOptions::new().read(true).write(true).open(path) {
+        Ok(_) => false,
+        Err(_) => true,
+    }
+}
+
+/// Whether the `desktop --build-only` rebuild should be retried once. Any
+/// non-success exit qualifies: the common cause is a transient first-attempt
+/// failure (still-settling tree / self-healed Electron download) that a clean
+/// second run resolves.
+fn rebuild_needs_retry(exit_code: Option<i32>) -> bool {
+    exit_code != Some(0)
+}
+
+/// Spawn `youtab <args>` from `cwd`, stream stdout/stderr as Log events on the
+/// bootstrap channel, and return the exit code. Mirrors powershell::run_script
+/// but for an arbitrary command (no install.ps1 -File wrapping).
+async fn run_streamed(
+    app: &AppHandle,
+    program: &Path,
+    args: &[String],
+    cwd: &Path,
+    envs: &[(String, OsString)],
+    stage: Option<&str>,
+) -> Result<CmdResult> {
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // CREATE_NO_WINDOW = 0x08000000 — no flashing console behind the GUI.
+        cmd.creation_flags(0x0800_0000);
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| anyhow!("spawning {} {:?}: {e}", program.display(), args))?;
+
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+    // Same non-UTF-8-safe decode path as powershell::run_script (#67193).
+    let mut out = BufReader::new(stdout);
+    let mut err = BufReader::new(stderr);
+    let mut out_buf = Vec::new();
+    let mut err_buf = Vec::new();
+
+    let stage_owned = stage.map(|s| s.to_string());
+    loop {
+        tokio::select! {
+            line = read_decoded_line(&mut out, &mut out_buf) => match line {
+                Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l),
+                Ok(None) => break,
+                Err(_) => { tracing::warn!("stdout read error"); break; }
+            },
+            line = read_decoded_line(&mut err, &mut err_buf) => match line {
+                Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l),
+                Ok(None) => {}
+                Err(_) => { tracing::warn!("stderr read error"); }
+            },
+        }
+    }
+    while let Ok(Some(l)) = read_decoded_line(&mut out, &mut out_buf).await {
+        emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l);
+    }
+    while let Ok(Some(l)) = read_decoded_line(&mut err, &mut err_buf).await {
+        emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l);
+    }
+
+    let status = child.wait().await.map_err(|e| anyhow!("waiting for child: {e}"))?;
+    Ok(CmdResult {
+        exit_code: status.code(),
+    })
+}
+
+struct CmdResult {
+    exit_code: Option<i32>,
+}
+
+/// Path to the venv youtab shim under an install root, regardless of existence.
+fn venv_youtab(install_root: &Path) -> PathBuf {
+    if cfg!(target_os = "windows") {
+        install_root.join("venv").join("Scripts").join("youtab.exe")
+    } else {
+        install_root.join("venv").join("bin").join("youtab")
+    }
+}
+
+/// Resolve the youtab CLI to drive. Prefer the venv shim in the install we
+/// just updated; fall back to `youtab` on PATH.
+fn resolve_youtab(install_root: &Path) -> Option<PathBuf> {
+    let shim = venv_youtab(install_root);
+    if shim.exists() {
+        return Some(shim);
+    }
+    // PATH fallback. which-style probe via env, kept dependency-free.
+    let exe = if cfg!(target_os = "windows") { "youtab.exe" } else { "youtab" };
+    if let Ok(path) = std::env::var("PATH") {
+        let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+        for dir in path.split(sep) {
+            let cand = Path::new(dir).join(exe);
+            if cand.exists() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
+    let youtab_home = crate::paths::youtab_home();
+    let mut envs = vec![(
+        "YOUTAB_AGENT_HOME".to_string(),
+        youtab_home.as_os_str().to_os_string(),
+    )];
+    // `youtab update` is a Python CLI writing to a pipe here, so CPython
+    // block-buffers its stdout: nothing reaches run_streamed (and the live
+    // log UI) until 8 KB accumulate or the process exits. Long quiet steps —
+    // the pre-update backup can zip multi-GB archives for minutes — render as
+    // a frozen stage, and users cancel a healthy update. Force line-by-line
+    // output instead.
+    envs.push((crate::diagnostics::OPERATION_ENV.to_string(),
+        OsString::from(crate::diagnostics::operation_id())));
+    envs.push(("PYTHONUNBUFFERED".to_string(), OsString::from("1")));
+    // We hold the update-in-progress marker for this whole run, and the
+    // `youtab update` child claims that SAME lock (youtab_agent_cli/update_lock.py).
+    // Name our pid so the child recognizes the live holder as its own
+    // orchestrator and runs under our claim — without this every GUI update
+    // refuses its parent's marker with exit 2 ("Youtab is still running")
+    // and no number of retries can ever succeed. Keep the variable name in
+    // sync with HANDOFF_PID_ENV in youtab_agent_cli/update_lock.py.
+    envs.push((
+        "YOUTAB_AGENT_UPDATE_HANDOFF_PID".to_string(),
+        OsString::from(std::process::id().to_string()),
+    ));
+    if let Some(path) = path_with_prepended_entries(&[
+        youtab_home.join("node").join("bin"),
+        venv_bin_dir(install_root),
+    ]) {
+        envs.push(("PATH".to_string(), path));
+    }
+    envs
+}
+
+fn venv_bin_dir(install_root: &Path) -> PathBuf {
+    if cfg!(target_os = "windows") {
+        install_root.join("venv").join("Scripts")
+    } else {
+        install_root.join("venv").join("bin")
+    }
+}
+
+fn path_with_prepended_entries(entries: &[PathBuf]) -> Option<OsString> {
+    let mut parts: Vec<PathBuf> = entries.to_vec();
+    if let Some(existing) = env::var_os("PATH") {
+        parts.extend(env::split_paths(&existing));
+    }
+    env::join_paths(parts).ok()
+}
+
+fn update_branch_from_args<I, S>(args: I) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    arg_value_from_args(args, "--branch")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn target_app_from_args<I, S>(args: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    arg_value_from_args(args, "--target-app")
+        .map(PathBuf::from)
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("app"))
+}
+
+fn arg_value_from_args<I, S>(args: I, name: &str) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut iter = args.into_iter().map(|s| s.as_ref().to_string()).peekable();
+    while let Some(arg) = iter.next() {
+        if arg == name {
+            return iter.next();
+        }
+        if let Some(value) = arg.strip_prefix(&format!("{name}=")) {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+async fn install_macos_app_update(
+    app: &AppHandle,
+    install_root: &Path,
+    target_app: &Path,
+) -> Result<PathBuf> {
+    if target_app.extension().and_then(|e| e.to_str()) != Some("app") {
+        return Err(anyhow!(
+            "refusing to install update into non-app path: {}",
+            target_app.display()
+        ));
+    }
+
+    let rebuilt_app = crate::bootstrap::resolve_youtab_desktop_app(install_root).ok_or_else(|| {
+        anyhow!(
+            "desktop rebuild succeeded but no Youtab.app was found under {}",
+            install_root.join("apps").join("desktop").join("release").display()
+        )
+    })?;
+
+    let same = match (rebuilt_app.canonicalize(), target_app.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => rebuilt_app == target_app,
+    };
+    if same {
+        emit_log(
+            app,
+            Some("install"),
+            LogStream::Stdout,
+            &format!(
+                "[update] rebuilt app is already the launch target: {}",
+                target_app.display()
+            ),
+        );
+        return Ok(target_app.to_path_buf());
+    }
+
+    emit_log(
+        app,
+        Some("install"),
+        LogStream::Stdout,
+        &format!(
+            "[update] installing rebuilt app {} -> {}",
+            rebuilt_app.display(),
+            target_app.display()
+        ),
+    );
+
+    if let Some(parent) = target_app.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let tmp = PathBuf::from(format!("{}.youtab-agent-runtime-update-new", target_app.display()));
+    let old = PathBuf::from(format!("{}.youtab-agent-runtime-update-old", target_app.display()));
+    remove_dir_if_exists(&tmp).await;
+    remove_dir_if_exists(&old).await;
+
+    let ditto = Command::new("/usr/bin/ditto")
+        .arg(&rebuilt_app)
+        .arg(&tmp)
+        .current_dir(crate::paths::youtab_home())
+        .status()
+        .await
+        .map_err(|e| anyhow!("running ditto: {e}"))?;
+    if !ditto.success() {
+        return Err(anyhow!(
+            "ditto failed while copying updated app into {}",
+            tmp.display()
+        ));
+    }
+
+    // Atomic-as-possible swap with rollback. Extracted so the invariant
+    // (target is never left deleted-with-no-replacement) can be unit-tested
+    // without ditto / a real .app bundle.
+    swap_in_new_bundle(&tmp, target_app, &old).await?;
+
+    let _ = Command::new("/usr/bin/xattr")
+        .arg("-dr")
+        .arg("com.apple.quarantine")
+        .arg(target_app)
+        .current_dir(crate::paths::youtab_home())
+        .status()
+        .await;
+
+    Ok(target_app.to_path_buf())
+}
+
+/// Move a freshly-staged bundle (`tmp`) into place at `target`, parking any
+/// existing bundle at `old` so the move can succeed (macOS `rename` won't
+/// overwrite a non-empty directory).
+///
+/// Invariant: on ANY failure path, `target` is left pointing at a working
+/// bundle — either the original (rolled back from `old`) or untouched — and we
+/// never delete the running app with no replacement in place. The staged `tmp`
+/// copy is cleaned up on failure.
+#[cfg(any(target_os = "macos", test))]
+async fn swap_in_new_bundle(tmp: &Path, target: &Path, old: &Path) -> Result<()> {
+    let moved_old = if target.exists() {
+        if let Err(err) = tokio::fs::rename(target, old).await {
+            // Could not move the existing app aside. Leave it untouched and
+            // bail — a failed update must not brick the install.
+            remove_dir_if_exists(tmp).await;
+            return Err(anyhow!(
+                "could not move existing app aside at {} (leaving it in place): {err}",
+                target.display()
+            ));
+        }
+        true
+    } else {
+        false
+    };
+    if let Err(err) = tokio::fs::rename(tmp, target).await {
+        // Restore the original app from the backup so the user keeps a working
+        // install, and clean up the staged copy.
+        if moved_old {
+            let _ = tokio::fs::rename(old, target).await;
+        }
+        remove_dir_if_exists(tmp).await;
+        return Err(anyhow!("installing updated app at {}: {err}", target.display()));
+    }
+    remove_dir_if_exists(old).await;
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn install_macos_app_update(
+    _app: &AppHandle,
+    _install_root: &Path,
+    target_app: &Path,
+) -> Result<PathBuf> {
+    Ok(target_app.to_path_buf())
+}
+
+#[cfg(any(target_os = "macos", test))]
+async fn remove_dir_if_exists(path: &Path) {
+    if path.exists() {
+        let _ = tokio::fs::remove_dir_all(path).await;
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn launch_macos_app_and_exit(app: &AppHandle, target_app: &Path) -> Result<()> {
+    crate::bootstrap::open_macos_app_detached(target_app)
+        .map_err(|e| anyhow!("launching {}: {e}", target_app.display()))?;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    app.exit(0);
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn launch_macos_app_and_exit(_app: &AppHandle, _target_app: &Path) -> Result<()> {
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Event helpers — keep emit shape identical to bootstrap.rs so the UI is reused
+// ---------------------------------------------------------------------------
+
+fn stage_info(name: &str, title: &str) -> StageInfo {
+    StageInfo {
+        name: name.to_string(),
+        title: title.to_string(),
+        category: "update".to_string(),
+        needs_user_input: false,
+    }
+}
+
+/// The synthetic update manifest. Mirrors the real operations `run_update`
+/// performs so the progress UI shows them as discrete steps (with the live log
+/// underneath) instead of one monolithic bar. `include_install` adds the macOS
+/// app-swap stage. Both the happy path and the re-entrancy guard build the
+/// manifest here so the two can never drift apart.
+fn update_stages(include_install: bool) -> Vec<StageInfo> {
+    let mut stages = vec![
+        stage_info("handoff", "Preparing to update"),
+        stage_info("update", "Downloading the latest version"),
+        stage_info("rebuild", "Rebuilding the desktop app"),
+    ];
+    if include_install {
+        stages.push(stage_info("install", "Installing the update"));
+    }
+    stages
+}
+
+// option_env! only accepts string literals, so the build-time pins are read
+// by their literal names here. Mirrors bootstrap.rs's helper of the same name
+// (kept local rather than shared because option_env! can't be parameterized).
+fn option_env_string(key: &str) -> Option<String> {
+    let val = match key {
+        "BUILD_PIN_COMMIT" => option_env!("BUILD_PIN_COMMIT"),
+        "BUILD_PIN_BRANCH" => option_env!("BUILD_PIN_BRANCH"),
+        _ => None,
+    };
+    val.map(|s| s.to_string())
+}
+
+fn emit(app: &AppHandle, event: BootstrapEvent) {
+    let event = event.safe_for_display();
+    let event = event.with_diagnostic();
+    tracing::info!(operation_id = %event.diagnostic.operation_id,
+        diagnostic_code = %event.diagnostic.code, diagnostic_stage = %event.diagnostic.stage,
+        "installer diagnostic context");
+    if app.emit(BootstrapEvent::CHANNEL, &event).is_err() {
+        tracing::warn!("failed to emit update event");
+    }
+}
+
+fn emit_stage(
+    app: &AppHandle,
+    name: &str,
+    state: StageState,
+    duration_ms: Option<u64>,
+    error: Option<String>,
+) {
+    tracing::info!(stage = %name, ?state, ?duration_ms,
+        error = ?error.as_deref().map(|value| crate::events::fixed_diagnostic(value, false)), "update stage");
+    emit(
+        app,
+        BootstrapEvent::Stage {
+            name: name.to_string(),
+            state,
+            duration_ms,
+            result: None,
+            error,
+        },
+    );
+}
+
+fn emit_log(app: &AppHandle, stage: Option<&str>, stream: LogStream, line: &str) {
+    // Keep stage and stream for progress, but never persist or emit the raw
+    // child line; it can contain an unlabelled credential.
+    match stage {
+        Some(s) => tracing::info!(target: "bootstrap.log", stage = %s, "{}", crate::events::fixed_diagnostic(line, true)),
+        None => tracing::info!(target: "bootstrap.log", "{}", crate::events::fixed_diagnostic(line, true)),
+    }
+    emit(
+        app,
+        BootstrapEvent::Log {
+            stage: stage.map(|s| s.to_string()),
+            line: line.to_string(),
+            stream,
+        },
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn release_channel_is_explicit_and_validated() {
+        assert_eq!(super::release_channel_from_args(["--update"]).unwrap(), "stable");
+        assert_eq!(super::release_channel_from_args(["--update", "--channel", "pilot"]).unwrap(), "pilot");
+        assert_eq!(super::release_channel_from_args(["--channel=stable"]).unwrap(), "stable");
+        for args in [vec!["--channel"], vec!["--channel", "preview"], vec!["--channel=../pilot"], vec!["--channel=pilot", "--channel=stable"]] {
+            assert!(super::release_channel_from_args(args).is_err());
+        }
+    }
+    use super::*;
+
+    #[test]
+    fn venv_youtab_is_under_install_root() {
+        let root = Path::new("/x/youtab-agent-runtime");
+        let shim = venv_youtab(root);
+        assert!(shim.starts_with(root));
+        assert!(shim.to_string_lossy().contains("venv"));
+    }
+
+    #[test]
+    fn missing_file_is_not_locked() {
+        assert!(!is_locked(Path::new("/nonexistent/does/not/exist/xyz")));
+    }
+
+    #[test]
+    fn update_child_env_forces_unbuffered_python() {
+        let envs = update_child_env(Path::new("/x/youtab-agent-runtime"));
+        assert!(
+            envs.iter()
+                .any(|(k, v)| k == "PYTHONUNBUFFERED" && v.to_str() == Some("1")),
+            "update children must run unbuffered so long steps stream to the live log"
+        );
+    }
+
+    #[test]
+    fn update_child_env_names_our_pid_for_the_lock_handoff() {
+        let envs = update_child_env(Path::new("/x/youtab-agent-runtime"));
+        assert!(
+            envs.iter().any(|(k, v)| k == "YOUTAB_AGENT_UPDATE_HANDOFF_PID"
+                && v.to_str() == Some(std::process::id().to_string().as_str())),
+            "the youtab update child claims the same marker we hold; without our pid \
+             it refuses its own parent's lock and every GUI update dead-ends on exit 2"
+        );
+    }
+
+    #[test]
+    fn lock_probe_paths_include_desktop_app_payload() {
+        let root = Path::new("/x/youtab-agent-runtime");
+        let probes = install_lock_probe_paths(root);
+
+        assert!(
+            probes.iter().any(|p| p == &venv_youtab(root)),
+            "venv shim remains part of the update lock probe"
+        );
+        assert!(
+            // Windows/Linux payloads live under `resources/`, the macOS bundle
+            // under `Contents/Resources/` — Path::ends_with is case-sensitive.
+            probes.iter().any(|p| {
+                p.ends_with(Path::new("resources/app.asar"))
+                    || p.ends_with(Path::new("Resources/app.asar"))
+            }),
+            "packaged app.asar must be probed so repair/re-clone waits for the old desktop to exit"
+        );
+    }
+
+    #[test]
+    fn locked_paths_ignores_missing_payloads() {
+        let root = Path::new("/nonexistent/youtab-agent-runtime");
+        let probes = install_lock_probe_paths(root);
+
+        assert!(locked_paths(&probes).is_empty());
+    }
+
+    // Publish the complete outcome before the parent observes the report path.
+    fn publish_install_lock_report(report: &Path, outcome: &str) {
+        let staged = tempfile::NamedTempFile::new_in(report.parent().unwrap()).unwrap();
+        std::fs::write(staged.path(), outcome).unwrap();
+        staged.persist(report).unwrap();
+    }
+
+    // This helper is executed by the real test binary as a separate OS process.
+    #[test]
+    fn install_lock_process_helper() {
+        let Some(home) = std::env::var_os("YOUTAB_TEST_INSTALL_LOCK_HOME") else { return; };
+        let home = PathBuf::from(home);
+        let report = PathBuf::from(std::env::var_os("YOUTAB_TEST_INSTALL_LOCK_REPORT").unwrap());
+        let control = PathBuf::from(std::env::var_os("YOUTAB_TEST_INSTALL_LOCK_CONTROL").unwrap());
+        std::fs::write(report.with_extension("ready"), "ready").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !control.join("start").exists() {
+            assert!(Instant::now() < deadline, "parent did not release start barrier");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        match UpdateMarkerGuard::acquire_for_install(&home) {
+            Ok(guard) => {
+                publish_install_lock_report(&report, "acquired");
+                if std::env::var_os("YOUTAB_TEST_INSTALL_LOCK_ABRUPT_EXIT").is_some() {
+                    std::process::exit(0); // bypass Drop to prove OS-owned crash recovery
+                }
+                while !control.join("release").exists() {
+                    assert!(Instant::now() < deadline, "parent did not release owner");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                guard.complete();
+            }
+            Err(_) => publish_install_lock_report(&report, "denied"),
+        }
+    }
+
+    #[test]
+    fn staged_child_holds_install_lock_until_update_takes_it() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        hold_staged_child_install_lock(&home).unwrap();
+        assert!(UpdateMarkerGuard::acquire_for_install(&home).is_err());
+        let lock = take_staged_child_install_lock(&home).unwrap().unwrap();
+        assert!(UpdateMarkerGuard::acquire_for_install(&home).is_err());
+        drop(lock);
+        assert!(UpdateMarkerGuard::acquire_for_install(&home).is_ok());
+        release_staged_child_install_lock();
+    }
+
+    fn prove_install_process_exclusion(home: &Path, second_home: &Path, control: &Path) {
+        let executable = std::env::current_exe().unwrap();
+        let mut children = Vec::new();
+        let mut reports = Vec::new();
+        for (index, selected) in [home, second_home].into_iter().enumerate() {
+            let report = control.join(format!("claim-{index}"));
+            children.push(std::process::Command::new(&executable)
+                .args(["--exact", "update::tests::install_lock_process_helper", "--nocapture"])
+                .env("YOUTAB_TEST_INSTALL_LOCK_HOME", selected)
+                .env("YOUTAB_TEST_INSTALL_LOCK_REPORT", &report)
+                .env("YOUTAB_TEST_INSTALL_LOCK_CONTROL", control)
+                .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
+            reports.push(report);
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !reports.iter().all(|p| p.with_extension("ready").exists()) {
+            assert!(Instant::now() < deadline, "children did not reach start barrier");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::fs::write(control.join("start"), "start").unwrap();
+        while !reports.iter().all(|p| p.exists()) {
+            assert!(Instant::now() < deadline, "children did not report claims");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut outcomes = reports.iter().map(|p| std::fs::read_to_string(p).unwrap()).collect::<Vec<_>>();
+        outcomes.sort();
+        // Check while the winning owner is still alive and holding the descriptor.
+        let expected = vec!["acquired".to_string(), "denied".to_string()];
+        std::fs::write(control.join("release"), "release").unwrap();
+        for mut child in children { assert!(child.wait().unwrap().success()); }
+        assert_eq!(outcomes, expected, "two Setups must never both enter mutation");
+        let guard = UpdateMarkerGuard::acquire_for_install(second_home).unwrap();
+        guard.complete();
+        // Completion must release before the Setup event loop exits.
+        let next = UpdateMarkerGuard::acquire_for_install(home).unwrap();
+        drop(next);
+    }
+
+    #[test]
+    fn install_lock_excludes_simultaneous_setup_processes() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        prove_install_process_exclusion(&home, &home, root.path());
+    }
+
+    #[test]
+    fn install_lock_excludes_processes_using_home_aliases() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let alias = root.path().join("alias");
+        std::fs::create_dir(&home).unwrap();
+        #[cfg(windows)]
+        assert!(std::process::Command::new("cmd.exe").args(["/d", "/c", "mklink", "/J"])
+            .arg(&alias).arg(&home).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap().success());
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&home, &alias).unwrap();
+        prove_install_process_exclusion(&home, &alias, root.path());
+        #[cfg(windows)]
+        std::fs::remove_dir(&alias).unwrap();
+    }
+
+    #[test]
+    fn install_lock_failure_and_publication_failure_abort_and_release() {
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join(".youtab-agent-runtime-update-in-progress");
+        let sidecar = marker.with_extension("install-lock");
+        std::fs::create_dir(&sidecar).unwrap();
+        assert!(UpdateMarkerGuard::acquire_for_install(root.path()).is_err());
+        assert!(!marker.exists(), "failed lock must not publish a marker");
+        std::fs::remove_dir(&sidecar).unwrap();
+        std::fs::create_dir(&marker).unwrap();
+        std::fs::write(marker.join("victim"), "preserve").unwrap();
+        assert!(UpdateMarkerGuard::acquire_for_install(root.path()).is_err());
+        assert_eq!(std::fs::read_to_string(marker.join("victim")).unwrap(), "preserve");
+        std::fs::remove_file(marker.join("victim")).unwrap();
+        std::fs::remove_dir(&marker).unwrap();
+        let guard = UpdateMarkerGuard::acquire_for_install(root.path()).unwrap();
+        drop(guard);
+        // An inaccessible/non-directory selected home also fails closed.
+        let blocked = root.path().join("not-a-home");
+        std::fs::write(&blocked, "preserve").unwrap();
+        assert!(UpdateMarkerGuard::acquire_for_install(&blocked).is_err());
+        assert_eq!(std::fs::read_to_string(blocked).unwrap(), "preserve");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn install_lock_readonly_permission_failure_is_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join(".youtab-agent-runtime-update-in-progress");
+        let sidecar = marker.with_extension("install-lock");
+        std::fs::write(&sidecar, "preserve").unwrap();
+        let original = std::fs::metadata(&sidecar).unwrap().permissions();
+        let mut readonly = original.clone();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&sidecar, readonly).unwrap();
+        let denied = UpdateMarkerGuard::acquire_for_install(root.path()).is_err();
+        std::fs::set_permissions(&sidecar, original).unwrap();
+        assert!(denied, "write permission failure must refuse install");
+        assert!(!marker.exists());
+        assert_eq!(std::fs::read_to_string(sidecar).unwrap(), "preserve");
+        drop(UpdateMarkerGuard::acquire_for_install(root.path()).unwrap());
+    }
+
+    #[test]
+    fn install_lock_recovers_after_owner_process_exits_without_drop() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(root.path().join("start"), "start").unwrap();
+        let report = root.path().join("crash-report");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "update::tests::install_lock_process_helper", "--nocapture"])
+            .env("YOUTAB_TEST_INSTALL_LOCK_HOME", &home)
+            .env("YOUTAB_TEST_INSTALL_LOCK_REPORT", &report)
+            .env("YOUTAB_TEST_INSTALL_LOCK_CONTROL", root.path())
+            .env("YOUTAB_TEST_INSTALL_LOCK_ABRUPT_EXIT", "1")
+            .stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
+        assert!(status.success());
+        assert_eq!(std::fs::read_to_string(report).unwrap(), "acquired");
+        assert!(home.join(".youtab-agent-runtime-update-in-progress").exists());
+        let guard = UpdateMarkerGuard::acquire_for_install(&home).unwrap();
+        drop(guard);
+        assert!(!home.join(".youtab-agent-runtime-update-in-progress").exists());
+    }
+
+    #[test]
+    fn install_lock_lifetime_does_not_expire_with_pid_hint() {
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join(".youtab-agent-runtime-update-in-progress");
+        let guard = UpdateMarkerGuard::acquire_for_install(root.path()).unwrap();
+        std::fs::write(&marker, "0\n0").unwrap();
+        assert!(live_marker_owner(&marker).is_none());
+        assert!(UpdateMarkerGuard::acquire_for_install(root.path()).is_err());
+        guard.complete();
+        drop(UpdateMarkerGuard::acquire_for_install(root.path()).unwrap());
+    }
+
+    #[test]
+    fn update_marker_guard_writes_then_removes_on_drop() {
+        let dir = unique_tmp_dir("marker-guard");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".youtab-agent-runtime-update-in-progress");
+
+        {
+            let _g = UpdateMarkerGuard::acquire(marker.clone())
+                .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
+            assert!(marker.exists(), "marker must exist while the guard is held");
+            let body = std::fs::read_to_string(&marker).unwrap();
+            let pid_line = body.lines().next().unwrap();
+            assert_eq!(
+                pid_line.trim().parse::<u32>().unwrap(),
+                std::process::id(),
+                "marker records our pid so the desktop can probe liveness"
+            );
+            assert_eq!(body.lines().count(), 2, "marker is pid + started_at lines");
+        }
+
+        assert!(
+            !marker.exists(),
+            "Drop must remove the marker on every exit path (incl. early return / panic unwind)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_marker_guard_drop_is_quiet_when_already_gone() {
+        let dir = unique_tmp_dir("marker-guard-gone");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".youtab-agent-runtime-update-in-progress");
+
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
+        // Simulate an external cleanup (e.g. the desktop pruned a marker it
+        // judged stale) before our guard drops — Drop must not panic.
+        std::fs::remove_file(&marker).unwrap();
+        drop(guard);
+
+        assert!(!marker.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Spawn a short-lived sibling process whose pid stands in for a foreign
+    /// updater. Same-process double-acquire no longer models contention: since
+    /// #74761 `live_marker_owner` treats our own pid as adoptable (desktop
+    /// pre-writes it), so a second acquire in *this* process would succeed.
+    fn spawn_foreign_holder() -> std::process::Child {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // `timeout.exe` exits immediately when stdin is redirected by a
+            // test runner, so it cannot reliably stand in for a live owner.
+            std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"])
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn foreign marker holder")
+        }
+        #[cfg(not(windows))]
+        {
+            std::process::Command::new("sleep")
+                .arg("30")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn foreign marker holder")
+        }
+    }
+
+    #[test]
+    fn acquire_refuses_while_a_live_updater_owns_the_marker() {
+        let dir = unique_tmp_dir("marker-contended");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".youtab-agent-runtime-update-in-progress");
+
+        // A live *foreign* updater holds it. We must NOT clobber the marker and
+        // run concurrently over the same checkout — that race is what let a
+        // dashboard `youtab update` and install-mode bootstrap mutate one tree
+        // at once. Own-pid markers are adoptable (#74761), so the foreign pid
+        // must be a real sibling process.
+        let mut foreign = spawn_foreign_holder();
+        let foreign_pid = foreign.id();
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        std::fs::write(&marker, format!("{foreign_pid}\n{started_at}")).unwrap();
+
+        let owner = UpdateMarkerGuard::acquire(marker.clone())
+            .err()
+            .expect("acquire must be refused while a foreign updater is live");
+        assert_eq!(owner.pid, foreign_pid);
+
+        // The refused guard must not delete the live owner's marker.
+        assert!(marker.exists(), "refused acquire must leave the marker intact");
+        let _ = foreign.kill();
+        let _ = foreign.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn acquire_adopts_a_marker_prewritten_with_our_own_pid() {
+        // #74761: desktop writeUpdateMarker(youtabHome, child.pid) races ahead
+        // of UpdateMarkerGuard::acquire. The marker names US; refusing it made
+        // every in-app desktop update loop forever. Adopt and rewrite.
+        let dir = unique_tmp_dir("marker-own-pid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".youtab-agent-runtime-update-in-progress");
+
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            .saturating_sub(2);
+        std::fs::write(&marker, format!("{}\n{started_at}", std::process::id())).unwrap();
+
+        let guard = UpdateMarkerGuard::acquire(marker.clone()).unwrap_or_else(|owner| {
+            panic!(
+                "own-pid pre-write must be adoptable, got foreign owner pid={}",
+                owner.pid
+            )
+        });
+        assert!(marker.exists(), "adopted guard must own the marker");
+        let body = std::fs::read_to_string(&marker).unwrap();
+        assert_eq!(
+            body.lines().next().unwrap().trim().parse::<u32>().unwrap(),
+            std::process::id(),
+            "acquire rewrites the marker with our pid + fresh started_at"
+        );
+        drop(guard);
+        assert!(
+            !marker.exists(),
+            "Drop must still clear the marker we adopted"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn acquire_reclaims_a_marker_owned_by_a_dead_pid() {
+        let dir = unique_tmp_dir("marker-dead-pid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".youtab-agent-runtime-update-in-progress");
+
+        // pid 1 exists everywhere, so fabricate a dead one: a very large pid
+        // that no live process owns. A crashed updater must never wedge every
+        // future update.
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        std::fs::write(&marker, format!("4294967294\n{started_at}")).unwrap();
+
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("a dead owner must not block acquisition"));
+        let body = std::fs::read_to_string(&marker).unwrap();
+        assert_eq!(
+            body.lines().next().unwrap().trim().parse::<u32>().unwrap(),
+            std::process::id(),
+            "reclaiming rewrites the marker with our pid"
+        );
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn acquire_reclaims_a_marker_past_the_age_ceiling() {
+        let dir = unique_tmp_dir("marker-stale-age");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".youtab-agent-runtime-update-in-progress");
+
+        // Our own (live) pid, but started well past the ceiling: a wedged
+        // updater must not hold the lock forever.
+        let long_ago = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            .saturating_sub(UPDATE_MARKER_MAX_AGE_SECS + 60);
+        std::fs::write(&marker, format!("{}\n{long_ago}", std::process::id())).unwrap();
+
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("a marker past the ceiling must be reclaimable"));
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn completed_update_releases_marker_before_guard_drop() {
+        let dir = unique_tmp_dir("marker-complete");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".youtab-agent-runtime-update-in-progress");
+
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
+        guard.complete();
+
+        assert!(
+            !marker.exists(),
+            "a successful update must unblock desktop startup before relaunch/exit"
+        );
+        drop(guard);
+        assert!(!marker.exists(), "Drop stays idempotent after completion");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn marker_reader_refuses_nonregular_leaf_without_target_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("victim"), "preserve").unwrap();
+        let marker = dir.path().join(".youtab-agent-runtime-update-in-progress");
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd.exe")
+                .args(["/d", "/c", "mklink", "/J"]).arg(&marker).arg(&target)
+                .stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
+            assert!(status.success());
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &marker).unwrap();
+        assert!(open_marker_object(&marker, false).is_err());
+        assert!(live_marker_owner(&marker).is_none());
+        // Publication cannot replace a directory/junction, so refuse mutation.
+        assert!(UpdateMarkerGuard::acquire(marker.clone()).is_err());
+        assert_eq!(std::fs::read_to_string(target.join("victim")).unwrap(), "preserve");
+        assert!(target.is_dir());
+        #[cfg(windows)]
+        std::fs::remove_dir(&marker).unwrap();
+    }
+
+    #[test]
+    fn marker_atomic_claim_preserves_hardlinked_victim() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        let marker = dir.path().join(".youtab-agent-runtime-update-in-progress");
+        std::fs::write(&victim, "preserve-victim").unwrap();
+        std::fs::hard_link(&victim, &marker).unwrap();
+        assert!(live_marker_owner(&marker).is_none());
+        let guard =
+            UpdateMarkerGuard::acquire(marker.clone()).unwrap_or_else(|_| panic!("no owner"));
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "preserve-victim");
+        assert_eq!(
+            std::fs::read_to_string(&marker)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+            std::process::id().to_string()
+        );
+        drop(guard);
+        assert!(!marker.exists());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "preserve-victim");
+    }
+
+    #[test]
+    fn marker_cleanup_preserves_replacement_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join(".youtab-agent-runtime-update-in-progress");
+        let guard =
+            UpdateMarkerGuard::acquire(marker.clone()).unwrap_or_else(|_| panic!("no owner"));
+        let replacement = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        replacement
+            .as_file()
+            .write_all(b"replacement-owner")
+            .unwrap();
+        replacement.persist(&marker).unwrap();
+        guard.complete();
+        drop(guard);
+        assert_eq!(
+            std::fs::read_to_string(marker).unwrap(),
+            "replacement-owner"
+        );
+    }
+
+    #[test]
+    fn marker_atomic_failure_preserves_existing_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("blocked-marker");
+        std::fs::create_dir(&marker).unwrap();
+        std::fs::write(marker.join("victim"), "preserve").unwrap();
+        let (_, identity) = canonical_marker_path(&marker).unwrap();
+        assert!(write_marker_atomically(&marker, identity, "not-published").is_err());
+        assert_eq!(
+            std::fs::read_to_string(marker.join("victim")).unwrap(),
+            "preserve"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert!(UpdateMarkerGuard::acquire(marker.clone()).is_err());
+        assert!(marker.is_dir());
+    }
+
+    #[test]
+    fn marker_cleanup_preserves_replaced_parent_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        let marker = home.join(".youtab-agent-runtime-update-in-progress");
+        let guard =
+            UpdateMarkerGuard::acquire(marker.clone()).unwrap_or_else(|_| panic!("no owner"));
+        #[cfg(windows)]
+        {
+            // An exclusive Windows handle also prevents namespace replacement.
+            assert_eq!(std::fs::rename(&home, dir.path().join("previous")).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+            assert!(marker.exists());
+            drop(guard);
+            assert!(!marker.exists());
+            assert!(home.is_dir());
+        }
+        #[cfg(unix)]
+        {
+        std::fs::rename(&home, dir.path().join("previous")).unwrap();
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(&marker, "new-home-marker").unwrap();
+        drop(guard);
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "new-home-marker");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn marker_selected_home_symlink_is_adopted_but_leaf_symlink_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("physical");
+        std::fs::create_dir(&home).unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&home, &alias).unwrap();
+        let victim = home.join("victim");
+        std::fs::write(&victim, "preserve").unwrap();
+        let marker = home.join(".youtab-agent-runtime-update-in-progress");
+        std::os::unix::fs::symlink(&victim, &marker).unwrap();
+        let guard = UpdateMarkerGuard::acquire(alias.join(marker.file_name().unwrap()))
+            .unwrap_or_else(|_| panic!("no owner"));
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "preserve");
+        assert_eq!(guard.path, marker);
+        drop(guard);
+        assert!(!marker.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn marker_selected_home_junction_retains_live_foreign_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("physical");
+        std::fs::create_dir(&home).unwrap();
+        let alias = dir.path().join("alias");
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&alias)
+            .arg(&home)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "owned synthetic junction creation");
+        let mut foreign = spawn_foreign_holder();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let marker = home.join(".youtab-agent-runtime-update-in-progress");
+        std::fs::write(&marker, format!("{}\n{now}", foreign.id())).unwrap();
+        let result = UpdateMarkerGuard::acquire(alias.join(marker.file_name().unwrap()));
+        let owner_pid = result.err().map(|owner| owner.pid);
+        let expected = foreign.id();
+        let _ = foreign.kill();
+        let _ = foreign.wait();
+        assert_eq!(
+            owner_pid,
+            Some(expected),
+            "selected alias must preserve live foreign guard"
+        );
+        std::fs::remove_file(&marker).unwrap();
+        let guard = UpdateMarkerGuard::acquire(alias.join(marker.file_name().unwrap()))
+            .unwrap_or_else(|_| panic!("alias claim"));
+        assert_eq!(
+            std::fs::canonicalize(&home)
+                .unwrap()
+                .join(marker.file_name().unwrap()),
+            guard.path
+        );
+        drop(guard);
+        assert!(!marker.exists());
+        std::fs::remove_dir(&alias).unwrap();
+    }
+
+    #[test]
+    fn parses_update_branch_from_space_or_equals_args() {
+        assert_eq!(
+            update_branch_from_args(["--update", "--branch", "bb/test"]),
+            Some("bb/test".to_string())
+        );
+        assert_eq!(
+            update_branch_from_args(["--update", "--branch=main"]),
+            Some("main".to_string())
+        );
+        assert_eq!(update_branch_from_args(["--update"]), None);
+    }
+
+    #[test]
+    fn update_manifest_leads_with_handoff_and_gates_install() {
+        let base = update_stages(false);
+        assert_eq!(
+            base.first().map(|s| s.name.as_str()),
+            Some("handoff"),
+            "the lock-wait must surface as the first visible step"
+        );
+        assert!(
+            base.iter().any(|s| s.name == "update") && base.iter().any(|s| s.name == "rebuild"),
+            "update + rebuild remain distinct stages"
+        );
+        assert!(
+            base.iter().all(|s| s.name != "install"),
+            "no app-swap stage unless an install target was passed"
+        );
+
+        let with_install = update_stages(true);
+        assert_eq!(
+            with_install.last().map(|s| s.name.as_str()),
+            Some("install"),
+            "the macOS app-swap is the final stage when present"
+        );
+        assert_eq!(
+            with_install.len(),
+            base.len() + 1,
+            "include_install adds exactly one stage"
+        );
+    }
+
+    #[test]
+    fn rebuild_retries_only_on_failure() {
+        assert!(!rebuild_needs_retry(Some(0)), "a clean rebuild must not retry");
+        assert!(rebuild_needs_retry(Some(1)), "a failed rebuild retries once");
+        assert!(
+            rebuild_needs_retry(None),
+            "a killed/signalled rebuild (no exit code) retries once"
+        );
+    }
+
+    #[test]
+    fn parses_only_app_targets() {
+        assert_eq!(
+            target_app_from_args(["--update", "--target-app", "/Applications/Youtab.app"]),
+            Some(PathBuf::from("/Applications/Youtab.app"))
+        );
+        assert_eq!(target_app_from_args(["--target-app", "/tmp/not-an-app"]), None);
+    }
+
+    // Helpers for the swap tests: make a throwaway dir tree we can rename.
+    fn unique_tmp_dir(tag: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "youtab-swap-test-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn write_marker(dir: &Path, contents: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("marker.txt"), contents).unwrap();
+    }
+
+    #[tokio::test]
+    async fn swap_installs_new_bundle_and_cleans_up() {
+        let base = unique_tmp_dir("ok");
+        let target = base.join("Youtab.app");
+        let tmp = base.join("Youtab.app.youtab-agent-runtime-update-new");
+        let old = base.join("Youtab.app.youtab-agent-runtime-update-old");
+        write_marker(&target, "OLD");
+        write_marker(&tmp, "NEW");
+
+        swap_in_new_bundle(&tmp, &target, &old).await.unwrap();
+
+        // New bundle is now at target; staging + backup dirs are gone.
+        assert_eq!(
+            std::fs::read_to_string(target.join("marker.txt")).unwrap(),
+            "NEW"
+        );
+        assert!(!tmp.exists(), "staged copy should be cleaned up");
+        assert!(!old.exists(), "backup should be cleaned up on success");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn swap_failure_never_leaves_target_missing() {
+        // Regression guard for the catastrophic path: the move-aside of the
+        // existing app fails AND the staged bundle can't be installed. The
+        // buggy version deleted `target` when move-aside failed and then
+        // skipped rollback, bricking the install. The fixed version must leave
+        // the original app intact on disk.
+        //
+        // Trigger both failures deterministically:
+        //  - `old` is a NON-EMPTY dir  -> rename(target, old) fails
+        //  - `tmp` does not exist       -> rename(tmp, target) fails
+        let base = unique_tmp_dir("fail");
+        let target = base.join("Youtab.app");
+        let tmp = base.join("Youtab.app.youtab-agent-runtime-update-new"); // intentionally absent
+        let old = base.join("Youtab.app.youtab-agent-runtime-update-old");
+        write_marker(&target, "OLD");
+        write_marker(&old, "OCCUPIED"); // non-empty => rename(target,old) fails
+
+        let result = swap_in_new_bundle(&tmp, &target, &old).await;
+
+        assert!(result.is_err(), "swap should fail when neither move can complete");
+        assert!(target.exists(), "original app must NOT be deleted on failure");
+        assert_eq!(
+            std::fs::read_to_string(target.join("marker.txt")).unwrap(),
+            "OLD",
+            "original app contents must be intact after a failed swap"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn artifact_noop_update_requires_verified_stable_setup() {
+        let home = unique_tmp_dir("artifact-noop-setup");
+        let running = home.join("running-setup.exe");
+        let installed = crate::paths::installer_dest_in(&home);
+        std::fs::write(&running, b"running-setup-fixture").unwrap();
+        assert!(require_artifact_setup(&home, &running).is_err());
+        std::fs::write(&installed, b"partial").unwrap();
+        assert!(require_artifact_setup(&home, &running).is_err());
+        std::fs::write(&installed, b"running-setup-fixture").unwrap();
+        require_artifact_setup(&home, &running).unwrap();
+        // The normal update entrypoint runs from this stable path itself.
+        require_artifact_setup(&home, &installed).unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn swap_rolls_back_when_install_step_fails() {
+        // Move-aside succeeds but installing the staged bundle fails (tmp
+        // absent). The original must be rolled back from `old` to `target`.
+        let base = unique_tmp_dir("rollback");
+        let target = base.join("Youtab.app");
+        let tmp = base.join("Youtab.app.youtab-agent-runtime-update-new"); // absent
+        let old = base.join("Youtab.app.youtab-agent-runtime-update-old");
+        write_marker(&target, "OLD");
+
+        let result = swap_in_new_bundle(&tmp, &target, &old).await;
+
+        assert!(result.is_err());
+        assert!(target.exists(), "original must be restored after failed install");
+        assert_eq!(
+            std::fs::read_to_string(target.join("marker.txt")).unwrap(),
+            "OLD"
+        );
+        assert!(!old.exists(), "backup should be rolled back, not left behind");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+#[cfg(test)]
+mod artifact_admission_tests {
+    use super::*;
+
+    #[test]
+    fn coordination_protocol_requires_integer_one_in_both_manifests() {
+        let valid = serde_json::json!({"update_coordination_protocol": 1});
+        require_update_coordination_protocol(&valid, &valid).unwrap();
+        let missing = serde_json::json!({});
+        assert!(require_update_coordination_protocol(&missing, &valid).is_err());
+        assert!(require_update_coordination_protocol(&valid, &missing).is_err());
+        assert!(require_update_coordination_protocol(&missing, &missing).is_err());
+        for value in [serde_json::json!(0), serde_json::json!(2), serde_json::json!(-1), serde_json::json!(1.0), serde_json::json!("1"), serde_json::json!(true), serde_json::Value::Null] {
+            let bad = serde_json::json!({"update_coordination_protocol": value});
+            assert!(require_update_coordination_protocol(&bad, &bad).is_err());
+            assert!(require_update_coordination_protocol(&bad, &valid).is_err());
+            assert!(require_update_coordination_protocol(&valid, &bad).is_err());
+        }
+    }
+
+    #[cfg(windows)]
+    fn grant_foreign_home_mutation(path: &Path) {
+        use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+        use windows_sys::Win32::{Foundation::LocalFree, Security::{self, Authorization::{GetSecurityInfo, SetSecurityInfo, ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SE_FILE_OBJECT, SDDL_REVISION_1}}, Storage::FileSystem::{READ_CONTROL, WRITE_DAC, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ, FILE_SHARE_WRITE}};
+        let file = OpenOptions::new().access_mode(READ_CONTROL | WRITE_DAC)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(path).unwrap();
+        unsafe {
+            let mut owner = std::ptr::null_mut();
+            let mut original = std::ptr::null_mut();
+            assert_eq!(GetSecurityInfo(file.as_raw_handle() as _, SE_FILE_OBJECT, Security::OWNER_SECURITY_INFORMATION, &mut owner, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), &mut original), 0);
+            let mut owner_text = std::ptr::null_mut();
+            assert_ne!(ConvertSidToStringSidW(owner, &mut owner_text), 0);
+            let mut len=0; while *owner_text.add(len)!=0 {len+=1;}
+            let sid=String::from_utf16(std::slice::from_raw_parts(owner_text,len)).unwrap();
+            LocalFree(owner_text as _); LocalFree(original as _);
+            let text:Vec<u16>=format!("D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;AU)").encode_utf16().chain(Some(0)).collect();
+            let mut descriptor=std::ptr::null_mut();
+            assert_ne!(ConvertStringSecurityDescriptorToSecurityDescriptorW(text.as_ptr(),SDDL_REVISION_1,&mut descriptor,std::ptr::null_mut()),0);
+            let mut present=0;let mut defaulted=0;let mut acl=std::ptr::null_mut();
+            assert_ne!(Security::GetSecurityDescriptorDacl(descriptor,&mut present,&mut acl,&mut defaulted),0);
+            assert_eq!(SetSecurityInfo(file.as_raw_handle() as _,SE_FILE_OBJECT,Security::DACL_SECURITY_INFORMATION|Security::PROTECTED_DACL_SECURITY_INFORMATION,std::ptr::null_mut(),std::ptr::null_mut(),acl,std::ptr::null()),0);
+            LocalFree(descriptor as _);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unsafe_artifact_home_cannot_mutate_lock_journal_or_channel() {
+        let qa_root=std::env::var_os("YOUTAB_NATIVE_PRIVATE_QA_ROOT").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        for existing_lock in [false,true] {
+            let home=tempfile::Builder::new().prefix("update-admission-").tempdir_in(&qa_root).unwrap();
+            let root=home.path().join("youtab-agent-runtime");std::fs::create_dir(&root).unwrap();
+            let backup=home.path().join("youtab-agent-runtime.old-backup");std::fs::create_dir(&backup).unwrap();
+            let marker=root.join(".youtab-agent-runtime-bootstrap-complete");
+            let original=serde_json::json!({"releaseChannel":"pilot","releaseSequence":if existing_lock {4}else{1},"pinnedCommit":"a".repeat(40)}).to_string();
+            std::fs::write(&marker,&original).unwrap();
+            std::fs::write(root.join("content"),b"new-uncommitted-runtime").unwrap();
+            std::fs::write(backup.join("content"),b"original-runtime").unwrap();
+            let journal=home.path().join(".youtab-runtime-install-pending");std::fs::write(&journal,b"old\n").unwrap();
+            let hint=home.path().join(".youtab-agent-runtime-update-in-progress");
+            let sidecar=hint.with_extension("install-lock");
+            if existing_lock {std::fs::write(&hint,b"4294967294\n1\n").unwrap();std::fs::write(&sidecar,b"existing-lock-bytes").unwrap();}
+            grant_foreign_home_mutation(home.path());
+            assert!(prepare_artifact_update(home.path()).is_err());
+            assert_eq!(std::fs::read(&journal).unwrap(),b"old\n");
+            assert_eq!(std::fs::read(&marker).unwrap(),original.as_bytes());
+            assert_eq!(std::fs::read(root.join("content")).unwrap(),b"new-uncommitted-runtime");
+            assert_eq!(std::fs::read(backup.join("content")).unwrap(),b"original-runtime");
+            if existing_lock {
+                assert_eq!(std::fs::read(&hint).unwrap(),b"4294967294\n1\n");
+                assert_eq!(std::fs::read(&sidecar).unwrap(),b"existing-lock-bytes");
+            } else { assert!(!hint.exists());assert!(!sidecar.exists()); }
+        }
+    }
+}
+
+#[cfg(test)]
+mod channel_persistence_tests {
+    #[test]
+    fn same_version_channel_selection_is_persisted_without_replacing_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let marker_path = root.path().join(".youtab-agent-runtime-bootstrap-complete");
+        let original = serde_json::json!({"releaseChannel": "pilot", "releaseSequence": 4, "pinnedCommit": "a".repeat(40), "artifactSha256": "b".repeat(64), "preservedField": "unchanged"});
+        std::fs::write(&marker_path, original.to_string()).unwrap();
+        let next = super::persist_selected_channel(root.path(), &original, "stable", &"a".repeat(40), &"c".repeat(64)).unwrap();
+        assert_eq!(next["releaseChannel"], "stable");
+        assert_eq!(next["releaseSequence"], original["releaseSequence"]);
+        assert_eq!(next["artifactSha256"], original["artifactSha256"]);
+        assert_eq!(next["preservedField"], "unchanged");
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&std::fs::read(marker_path).unwrap()).unwrap(), next);
+        assert!(super::persist_selected_channel(root.path(), &original, "pilot", &"a".repeat(40), &"c".repeat(64)).is_err());
+    }
+}

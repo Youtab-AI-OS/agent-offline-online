@@ -1,0 +1,579 @@
+@source ".";
+@import './components/fit-text/fit-text.css' layer(components);
+@import './components/grid/grid.css' layer(components);
+@view-transition {
+  navigation: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @view-transition {
+    navigation: none;
+  }
+}
+
+::view-transition-old(page),
+::view-transition-new(page) {
+  animation-duration: 0.25s;
+  animation-timing-function: ease-out;
+}
+
+::view-transition-old(page) {
+  animation: fade-out 0.25s ease-out;
+}
+
+::view-transition-new(page) {
+  animation: fade-in 0.25s ease-out;
+}
+
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.animate-slide-down {
+  animation: slide-down 0.6s ease-out both;
+}
+
+.animate-slide-up {
+  animation: slide-up 0.6s ease-out both;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.5s ease-out both;
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 12s linear infinite;
+}
+
+@keyframes march {
+  to {
+    background-position: 0.5rem 0;
+  }
+}
+
+.group:hover .blink {
+  animation: blink 1s step-end infinite;
+}
+
+.dither {
+  background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%)
+    0 0 / 2px 2px;
+}
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-background-base: var(--background-base);
+  --color-midground: var(--midground);
+  --color-midground-base: var(--midground-base);
+  --color-foreground: var(--foreground);
+  --color-foreground-base: var(--foreground-base);
+  --color-gesso: #eaeaea;
+
+  /* Semantic tokens — defaults for DS preview; consumers (e.g. shadcn-style
+     dashboards) can remap these via their own @theme inline. */
+  --color-destructive: var(--destructive, #fb2c36);
+  --color-destructive-foreground: var(--destructive-foreground, #ffffff);
+  --color-success: var(--success, #4ade80);
+  --color-warning: var(--warning, #ffbd38);
+
+  /* Text hierarchy — semantic tokens with WCAG AA-targeted defaults.
+     Consumers can override `--text-*` on `:root` (or any scope) without
+     touching DS internals. No value here goes below 0.65 effective alpha
+     for primary/secondary so stacked `/N` opacity is unnecessary. */
+  --color-text-primary: var(--text-primary, var(--midground));
+  --color-text-secondary: var(
+    --text-secondary,
+    color-mix(in srgb, var(--midground-base) 80%, transparent)
+  );
+  --color-text-tertiary: var(
+    --text-tertiary,
+    color-mix(in srgb, var(--midground-base) 65%, transparent)
+  );
+  --color-text-disabled: var(
+    --text-disabled,
+    color-mix(in srgb, var(--midground-base) 45%, transparent)
+  );
+  --color-text-on-accent: var(--text-on-accent, var(--background));
+  --color-text-display: var(--text-display, var(--midground));
+
+  --color-current: currentColor;
+  --color-transparent: transparent;
+
+  --gap-inherit: inherit;
+  --height-between-header-footer: max(
+    400px,
+    calc(
+      100dvh - 5rem -
+        (var(--header-height, 3.5rem) + var(--footer-height, 4.35rem))
+    )
+  );
+}
+
+:root {
+  /* LENS_0 — "Youtab Teal", the promoted default dashboard palette (was amber).
+     Source of truth: web LENS_0 (design-language overlays). ThemeProvider
+     rewrites these as inline styles when a user switches themes. Consumers that
+     want a different DS default override these on their own `:root`. */
+  --foreground: color-mix(in srgb, #ffffff 0%, transparent);
+  --foreground-base: #ffffff;
+  --foreground-alpha: 0;
+  --midground: color-mix(in srgb, #ffe6cb 100%, transparent);
+  --midground-base: #ffe6cb;
+  --midground-alpha: 1;
+  --background: color-mix(in srgb, #041c1c 100%, transparent);
+  --background-base: #041c1c;
+  --background-alpha: 1;
+
+  /* Youtab "Ice Blue" — fixed brand accent (startup heading, etc.). Constant
+     across themes/modes; not a palette seed. */
+  --youtab-ice-blue: #a8e7ff;
+
+  /* Typography tokens — rewritten by ThemeProvider. Defaults match the system
+     stack so themes that don't override look native. */
+  --theme-font-sans: system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --theme-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo,
+    Consolas, monospace;
+  --theme-font-display: var(--theme-font-sans);
+  --theme-base-size: 15px;
+  --theme-line-height: 1.55;
+  --theme-letter-spacing: 0;
+
+  /* Layout tokens. */
+  --radius: 0.5rem;
+  --theme-radius: 0.5rem;
+  --theme-spacing-mul: 1;
+  --theme-density: comfortable;
+
+  /* Data-series accents — cream input + emerald-400 output over the dark
+     canvas. ThemeProvider overrides via --series-input-token/--series-output-token. */
+  --series-input-token: #ffe6cb;
+  --series-output-token: #34d399;
+
+  --font-sans: 'Collapse', sans-serif;
+  --font-mono: 'Courier Prime', monospace;
+  --font-rules-compressed: 'Rules Compressed', sans-serif;
+  --font-rules-expanded: 'Rules Expanded', sans-serif;
+  --font-mondwest: 'Mondwest', sans-serif;
+  --vsq: calc(0.5vw + 0.5vh);
+}
+
+/* Shadcn-compat tokens — promoted from web/src/index.css so the shared package
+   default matches the LENS_0 dashboard look. The dashboard's page code uses
+   shadcn-style utilities (bg-card, text-muted-foreground, border-border, …); we
+   expose those slots on top of the Youtab palette so classes keep resolving. */
+@theme inline {
+  /* Remap foreground to midground so `text-foreground` / `bg-foreground` stay
+     visible — in LENS_0, `--foreground` itself has alpha 0. */
+  --color-foreground: var(--midground);
+
+  --color-card: color-mix(in srgb, var(--midground-base) 4%, var(--background-base));
+  --color-card-foreground: var(--midground);
+  --color-primary: var(--midground);
+  --color-primary-foreground: var(--background-base);
+  --color-secondary: color-mix(in srgb, var(--midground-base) 6%, var(--background-base));
+  --color-secondary-foreground: var(--midground);
+  --color-muted: color-mix(in srgb, var(--midground-base) 8%, var(--background-base));
+  --color-muted-foreground: var(--color-text-secondary);
+  --color-accent: color-mix(in srgb, var(--midground-base) 10%, var(--background-base));
+  --color-accent-foreground: var(--midground);
+  --color-destructive: #fb2c36;
+  --color-destructive-foreground: #ffffff;
+  --color-success: #4ade80;
+  --color-warning: #ffbd38;
+  --color-border: color-mix(in srgb, var(--midground-base) 15%, transparent);
+  --color-input: color-mix(in srgb, var(--midground-base) 15%, transparent);
+  --color-ring: var(--midground);
+  --color-popover: color-mix(in srgb, var(--midground-base) 4%, var(--background-base));
+  --color-popover-foreground: var(--midground);
+
+  --radius-sm: calc(var(--theme-radius) - 4px);
+  --radius-md: calc(var(--theme-radius) - 2px);
+  --radius-lg: var(--theme-radius);
+  --radius-xl: calc(var(--theme-radius) + 4px);
+}
+
+@property --fit-captured-length {
+  syntax: '<length>';
+  initial-value: 0px;
+  inherits: true;
+}
+
+@utility font-compressed {
+  font-family: var(--font-rules-compressed);
+}
+
+@utility font-expanded {
+  font-family: var(--font-rules-expanded);
+}
+
+@utility font-mondwest {
+  font-family: var(--font-mondwest);
+}
+
+@utility font-courier {
+  font-family: 'Courier New', var(--font-mono), monospace;
+}
+
+/* Brand display style — opt-in uppercase + tracking. Purely typographic;
+   composes with any font utility (font-mondwest, font-compressed,
+   font-mono, font-courier) and any color utility. Use on chrome
+   (buttons, badges, nav section headings, page titles) where the brand
+   look is intentional. Body content should NOT use this utility.
+   Consumers wanting the canonical look apply `text-display font-mondwest`
+   together. */
+@utility text-display {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+@utility font-serif {
+  font-family: 'Times New Roman', Times, serif;
+}
+
+@utility text-box-trim-none {
+  text-box-trim: none;
+}
+
+@utility text-box-trim-both {
+  text-box-trim: trim-both;
+}
+
+@utility text-box-trim-start {
+  text-box-trim: trim-start;
+}
+
+@utility text-box-trim-end {
+  text-box-trim: trim-end;
+}
+
+@utility grid-cols-auto-fit {
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+}
+
+@utility h-between-header-footer {
+  min-height: var(--height-between-header-footer);
+}
+
+@utility w-fill {
+  width: -webkit-fill-available;
+}
+
+@utility h-fill {
+  height: -webkit-fill-available;
+}
+
+@utility antialiased {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+@utility underline-from-font {
+  text-decoration-skip-ink: auto;
+  text-underline-position: from-font;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(1rem);
+  }
+}
+
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(1rem);
+  }
+}
+
+@keyframes gradient-stroke {
+  0% {
+    background-position: 15% 15%;
+  }
+
+  100% {
+    background-position: 75% 75%;
+  }
+}
+
+.arc-border {
+  --_t: clamp(0%, (0.5 - var(--foreground-alpha, 1)) * 99900%, 100%);
+  --arc-c0: color-mix(in srgb, var(--foreground) var(--_t), transparent);
+  --arc-c1: var(--midground);
+  --arc-c2: var(--background);
+  --arc-angle: 160deg;
+  --arc-width: 1.25px;
+  --arc-inset: -2px;
+  --arc-duration: 2.23s;
+  --arc-gradient: linear-gradient(
+    var(--arc-angle),
+    transparent 0%,
+    var(--arc-c0) 15%,
+    var(--arc-c1) 20%,
+    var(--arc-c2) 25%,
+    transparent 35%,
+    transparent 40%,
+    var(--arc-c0) 55%,
+    var(--arc-c1) 60%,
+    var(--arc-c2) 65%,
+    transparent 75%,
+    transparent 80%,
+    var(--arc-c0) 95%,
+    var(--arc-c1) 100%
+  );
+
+  @apply pointer-events-none absolute z-[-1] overflow-hidden rounded-[inherit];
+
+  inset: var(--arc-inset);
+  padding: var(--arc-width);
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+
+  &::before {
+    content: '';
+    @apply absolute inset-0 rounded-[inherit];
+    background: var(--arc-gradient);
+    background-size: 300% 300%;
+    animation: gradient-stroke var(--arc-duration) linear infinite;
+  }
+}
+
+@layer base {
+  * {
+    @apply antialiased;
+
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+
+    &:hover {
+      scrollbar-color: color-mix(in srgb, var(--midground) 20%, transparent)
+        transparent;
+    }
+  }
+
+  ::-webkit-scrollbar {
+    width: 0.25rem;
+    height: 0.25rem;
+  }
+
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-button {
+    display: none;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 1rem;
+    min-height: 1rem;
+  }
+
+  *:hover::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--midground) 20%, transparent);
+  }
+
+  html,
+  body {
+    scrollbar-color: color-mix(in srgb, var(--midground) 65%, transparent)
+      transparent;
+  }
+
+  html:hover,
+  body:hover {
+    scrollbar-color: color-mix(in srgb, var(--midground) 80%, transparent)
+      transparent;
+  }
+
+  html::-webkit-scrollbar-thumb,
+  body::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--midground) 65%, transparent);
+  }
+
+  html:hover::-webkit-scrollbar-thumb,
+  body:hover::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--midground) 80%, transparent);
+  }
+
+  html {
+    font-size: clamp(14px, calc(14px + 2 * ((100vw - 1400px) / 400)), 18px);
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  .underline {
+    @apply underline-from-font underline decoration-current/25 decoration-solid decoration-auto underline-offset-1 transition-[text-decoration-color] hover:decoration-current;
+  }
+
+  *::selection,
+  code {
+    background: var(--selection-bg, var(--midground));
+    @apply text-background;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   NEUMORPHISM (soft-UI) LAYER — VISUAL ONLY. LENS_0 "Youtab Teal".
+   Raised surfaces look extruded from the dark teal canvas; fields look inset.
+   Palette, layout, spacing and functionality are unchanged — this only adds
+   soft dual-source depth (light top-left, shadow bottom-right), rounds corners
+   a touch more, and trades hard 1px borders for soft shadow edges. Applied on
+   the shared shadcn `data-slot` contracts so every card/button/field/menu
+   inherits it automatically.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root {
+  /* The canvas the depth is sculpted from (near --background). */
+  --neu-bg: var(--background-base, #041c1c);
+  /* Light source (top-left) and cast shadow (bottom-right), tuned for dark teal. */
+  --neu-light: rgba(255, 255, 255, 0.03);
+  --neu-dark: rgba(0, 0, 0, 0.34);
+  /* Depth presets (softened — subtler, lighter shadows). */
+  --neu-raised: 4px 4px 11px var(--neu-dark), -4px -4px 11px var(--neu-light);
+  --neu-raised-sm: 2px 2px 6px var(--neu-dark), -2px -2px 6px var(--neu-light);
+  --neu-raised-lg: 6px 6px 16px var(--neu-dark), -6px -6px 16px var(--neu-light);
+  --neu-inset: inset 3px 3px 7px var(--neu-dark), inset -3px -3px 7px var(--neu-light);
+  --neu-inset-sm: inset 1px 1px 4px var(--neu-dark), inset -1px -1px 4px var(--neu-light);
+  /* Softer radii for the extruded look. */
+  --neu-radius: 0.9rem;
+  --neu-radius-control: 0.7rem;
+  /* A11y focus ring (Ice-Blue) layered on top of the depth. */
+  --neu-focus-ring: 0 0 0 2px color-mix(in srgb, var(--youtab-ice-blue) 85%, transparent);
+}
+
+/* DAY (light) mode: classic light neumorphism on white — a soft grey cast
+   shadow (bottom-right) + a white highlight (top-left). The dark-teal values
+   above stay under `.dark`. Offsets/radii are inherited unchanged. */
+:root:not(.dark) {
+  --neu-dark: rgba(0, 0, 0, 0.12);
+  --neu-light: rgba(255, 255, 255, 0.9);
+}
+
+/* ── RAISED surfaces: cards, panels, popovers, menus, dialogs, tooltips ─────── */
+[data-slot='card'],
+.card,
+[data-slot='popover-content'],
+[data-slot='hover-card-content'],
+[data-slot='dropdown-menu-content'],
+[data-slot='menubar-content'],
+[data-slot='context-menu-content'],
+[data-slot='select-content'],
+[data-slot='command'],
+[data-slot='dialog-content'],
+[data-slot='alert-dialog-content'],
+[data-slot='sheet-content'],
+[data-slot='tooltip-content'] {
+  background-color: var(--neu-bg);
+  border-color: transparent;
+  box-shadow: var(--neu-raised);
+  border-radius: var(--neu-radius);
+}
+
+/* ── RAISED interactive: buttons, badges, pills, tabs, toggles ──────────────── */
+[data-slot='button'],
+[data-slot='badge'],
+[data-slot='toggle'],
+[data-slot='tabs-trigger'] {
+  border-color: transparent;
+  box-shadow: var(--neu-raised-sm);
+  border-radius: var(--neu-radius-control);
+  transition: box-shadow 160ms ease-out;
+}
+
+[data-slot='button']:hover:not(:disabled),
+[data-slot='toggle']:hover:not(:disabled) {
+  box-shadow: var(--neu-raised);
+}
+
+/* Pressed / selected / open → recessed. */
+[data-slot='button']:active:not(:disabled),
+[data-slot='button'][data-state='open'],
+[data-slot='button'][aria-pressed='true'],
+[data-slot='toggle'][data-state='on'],
+[data-slot='tabs-trigger'][data-state='active'] {
+  box-shadow: var(--neu-inset);
+}
+
+/* ── INSET surfaces: text fields, textareas, selects, search, toggle tracks ─── */
+[data-slot='input'],
+[data-slot='textarea'],
+[data-slot='select-trigger'],
+textarea,
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']) {
+  background-color: var(--neu-bg);
+  border-color: transparent;
+  box-shadow: var(--neu-inset);
+  border-radius: var(--neu-radius-control);
+}
+
+/* Switch: recessed track, raised thumb. */
+[data-slot='switch'] {
+  border-color: transparent;
+  box-shadow: var(--neu-inset-sm);
+}
+[data-slot='switch-thumb'] {
+  box-shadow: var(--neu-raised-sm);
+}
+
+/* ── Focus: keep an always-visible accent ring for a11y (never removed). ────── */
+[data-slot='input']:focus-visible,
+[data-slot='textarea']:focus-visible,
+[data-slot='select-trigger']:focus-visible,
+textarea:focus-visible,
+input:focus-visible {
+  outline: none;
+  box-shadow: var(--neu-inset), var(--neu-focus-ring);
+}
+[data-slot='button']:focus-visible,
+[data-slot='toggle']:focus-visible,
+[data-slot='tabs-trigger']:focus-visible {
+  outline: none;
+  box-shadow: var(--neu-raised-sm), var(--neu-focus-ring);
+}

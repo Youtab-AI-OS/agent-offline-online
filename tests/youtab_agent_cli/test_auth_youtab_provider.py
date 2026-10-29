@@ -1,0 +1,1149 @@
+"""Regression tests for Youtab OAuth refresh and inference JWT interactions."""
+
+import base64
+import json
+import logging
+import os
+import stat
+import subprocess
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+from youtab_agent_cli import auth
+
+
+
+# =============================================================================
+# _resolve_verify: CA bundle path validation
+# =============================================================================
+
+
+class TestResolveVerifyFallback:
+    """Verify _resolve_verify falls back to True when CA bundle path doesn't exist."""
+
+    @pytest.fixture(autouse=True)
+    def _pin_platform_to_linux(self, monkeypatch):
+        """Pin sys.platform so the macOS certifi fallback doesn't alter the
+        generic "default trust" return value asserted by these tests."""
+        monkeypatch.setattr("sys.platform", "linux")
+
+    def test_missing_ca_bundle_in_auth_state_falls_back(self):
+
+        result = auth._resolve_verify(auth_state={
+            "tls": {"insecure": False, "ca_bundle": "/nonexistent/ca-bundle.pem"},
+        })
+        assert result is True
+
+    def test_valid_ca_bundle_in_auth_state_is_returned(self, tmp_path, monkeypatch):
+        import ssl
+
+        ca_file = tmp_path / "ca-bundle.pem"
+        ca_file.write_text("fake cert", encoding="utf-8")
+
+        # Avoid loading actual PEM — just verify the return type
+        mock_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        monkeypatch.setattr(ssl, "create_default_context", lambda **kw: mock_ctx)
+
+        result = auth._resolve_verify(auth_state={
+            "tls": {"insecure": False, "ca_bundle": str(ca_file)},
+        })
+        assert isinstance(result, ssl.SSLContext), (
+            f"Expected ssl.SSLContext but got {type(result).__name__}: {result!r}"
+        )
+
+
+
+    def test_insecure_cannot_bypass_default_verification(self):
+
+        result = auth._resolve_verify(
+            insecure=True,
+            auth_state={"tls": {"ca_bundle": "/nonexistent/ca.pem"}},
+        )
+        assert result is True
+
+    def test_string_false_in_auth_state_does_not_disable_tls_verify(self):
+        import ssl
+
+        result = auth._resolve_verify(auth_state={"tls": {"insecure": "false"}})
+        assert result is not False
+        assert result is True or isinstance(result, ssl.SSLContext)
+
+    def test_string_true_in_auth_state_cannot_disable_tls_verify(self):
+
+        result = auth._resolve_verify(auth_state={"tls": {"insecure": "true"}})
+        assert result is True
+
+
+
+
+def _setup_youtab_auth(
+    youtab_home: Path,
+    *,
+    access_token: str = "",
+    refresh_token: str = "refresh-old",
+    scope: str = "inference:invoke",
+    expires_at: str = "2026-02-01T00:00:00+00:00",
+    expires_in: int = 0,
+    agent_key: str | None = None,
+    agent_key_expires_at: str | None = None,
+) -> None:
+    access_token = access_token or _invoke_jwt(seconds=3600, scope=scope)
+    youtab_home.mkdir(parents=True, exist_ok=True)
+    auth_store = {
+        "version": 1,
+        "active_provider": "youtab",
+        "providers": {
+            "youtab": {
+                "portal_base_url": "https://portal.example.com",
+                "inference_base_url": "https://inference.example.com/v1",
+                "client_id": "youtab-cli",
+                "token_type": "Bearer",
+                "scope": scope,
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "obtained_at": "2026-02-01T00:00:00+00:00",
+                "expires_in": expires_in,
+                "expires_at": expires_at,
+                "agent_key": agent_key,
+                "agent_key_id": None,
+                "agent_key_expires_at": agent_key_expires_at,
+                "agent_key_expires_in": None,
+                "agent_key_reused": None,
+                "agent_key_obtained_at": None,
+            }
+        },
+    }
+    (youtab_home / "auth.json").write_text(json.dumps(auth_store, indent=2), encoding="utf-8")
+
+
+def _jwt_with_claims(claims: dict) -> str:
+    def _part(payload: dict) -> str:
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
+
+
+def _future_iso(seconds: int = 3600) -> str:
+    return datetime.fromtimestamp(time.time() + seconds, tz=timezone.utc).isoformat()
+
+
+def _invoke_jwt(*, seconds: int = 3600, scope: object = "inference:invoke") -> str:
+    return _jwt_with_claims({
+        "sub": "test-user",
+        "scope": scope,
+        "exp": int(time.time() + seconds),
+    })
+
+
+def test_resolve_youtab_runtime_credentials_prefers_invoke_jwt_and_mirrors(
+    tmp_path,
+    monkeypatch,
+):
+    from youtab_agent_cli import auth as auth_mod
+
+    youtab_home = tmp_path / "youtab"
+    token = _invoke_jwt(seconds=3600)
+    _setup_youtab_auth(
+        youtab_home,
+        access_token=token,
+        scope=auth_mod.DEFAULT_YOUTAB_SCOPE,
+        expires_at=_future_iso(3600),
+        expires_in=3600,
+    )
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
+
+    creds = auth_mod.resolve_youtab_runtime_credentials()
+
+    assert creds["api_key"] == token
+    assert creds["source"] == auth_mod.YOUTAB_AUTH_PATH_INVOKE_JWT
+    assert creds["auth_path"] == auth_mod.YOUTAB_AUTH_PATH_INVOKE_JWT
+
+    payload = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
+    singleton = payload["providers"]["youtab"]
+    assert singleton["agent_key"] == token
+    assert datetime.fromisoformat(singleton["agent_key_expires_at"]).timestamp() > time.time() + 300
+
+    pool_entries = payload["credential_pool"]["youtab"]
+    assert len(pool_entries) == 1
+    assert pool_entries[0]["agent_key"] == token
+    assert pool_entries[0]["source"] == auth_mod.YOUTAB_DEVICE_CODE_SOURCE
+
+
+def test_resolve_youtab_runtime_credentials_invoke_jwt_is_idempotent(
+    tmp_path,
+    monkeypatch,
+):
+    from youtab_agent_cli import auth as auth_mod
+
+    youtab_home = tmp_path / "youtab"
+    youtab_home.mkdir(parents=True, exist_ok=True)
+    exp = int(time.time() + 3600)
+    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+    token = _jwt_with_claims({
+        "sub": "test-user",
+        "scope": auth_mod.DEFAULT_YOUTAB_SCOPE,
+        "exp": exp,
+    })
+    original_obtained_at = "2026-04-17T22:00:10+00:00"
+    auth_store = {
+        "version": 1,
+        "active_provider": "youtab",
+        "providers": {
+            "youtab": {
+                "portal_base_url": "https://api.youtab.io",
+                "inference_base_url": "https://inference-api.youtab.io/v1",
+                "client_id": "youtab-cli",
+                "token_type": "Bearer",
+                "scope": auth_mod.DEFAULT_YOUTAB_SCOPE,
+                "access_token": token,
+                "refresh_token": "refresh-token",
+                "obtained_at": "2026-02-01T00:00:00+00:00",
+                "expires_in": 123,
+                "expires_at": expires_at,
+                "agent_key": token,
+                "agent_key_id": None,
+                "agent_key_expires_at": expires_at,
+                "agent_key_expires_in": 123,
+                "agent_key_reused": False,
+                "agent_key_obtained_at": original_obtained_at,
+                "tls": {"insecure": False, "ca_bundle": None},
+            },
+        },
+    }
+    auth_path = youtab_home / "auth.json"
+    auth_path.write_text(json.dumps(auth_store, indent=2), encoding="utf-8")
+    before_content = auth_path.read_text(encoding="utf-8")
+    before_mtime = auth_path.stat().st_mtime_ns
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
+
+    def _unexpected_shared_write(*args, **kwargs):
+        raise AssertionError("unchanged invoke JWT resolution should not sync shared store")
+
+    sync_calls = []
+
+    monkeypatch.setattr(auth_mod, "_write_shared_youtab_state", _unexpected_shared_write)
+    monkeypatch.setattr(
+        auth_mod,
+        "_sync_youtab_pool_from_auth_store",
+        lambda: sync_calls.append(True),
+    )
+
+    creds = auth_mod.resolve_youtab_runtime_credentials()
+
+    assert creds["api_key"] == token
+    assert creds["source"] == auth_mod.YOUTAB_AUTH_PATH_INVOKE_JWT
+    assert auth_path.read_text(encoding="utf-8") == before_content
+    assert auth_path.stat().st_mtime_ns == before_mtime
+    assert sync_calls == []
+    payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    assert (
+        payload["providers"]["youtab"]["agent_key_obtained_at"]
+        == original_obtained_at
+    )
+
+
+def test_resolve_youtab_runtime_credentials_reauths_when_invoke_scope_missing(
+    tmp_path,
+    monkeypatch,
+):
+    from youtab_agent_cli import auth as auth_mod
+
+    youtab_home = tmp_path / "youtab"
+    token = _jwt_with_claims({
+        "sub": "test-user",
+        "scope": "inference:mint_agent_key",
+        "exp": int(time.time() + 3600),
+    })
+    _setup_youtab_auth(
+        youtab_home,
+        access_token=token,
+        refresh_token="",
+        scope="inference:mint_agent_key",
+        expires_at=_future_iso(3600),
+        expires_in=3600,
+    )
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
+
+    with pytest.raises(auth.AuthError) as exc:
+        auth_mod.resolve_youtab_runtime_credentials()
+
+    assert exc.value.code == "missing_inference_invoke_scope"
+    assert exc.value.relogin_required is True
+    payload = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
+    assert payload["providers"]["youtab"]["agent_key"] is None
+    assert "credential_pool" not in payload or not payload["credential_pool"].get("youtab")
+
+
+
+
+def test_removed_legacy_session_env_var_does_not_change_jwt_auth(tmp_path, monkeypatch):
+    from youtab_agent_cli import auth as auth_mod
+
+    youtab_home = tmp_path / "youtab"
+    token = _invoke_jwt(seconds=3600)
+    _setup_youtab_auth(
+        youtab_home,
+        access_token=token,
+        scope=auth_mod.DEFAULT_YOUTAB_SCOPE,
+        expires_at=_future_iso(3600),
+        expires_in=3600,
+    )
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
+    monkeypatch.setenv("YOUTAB_AGENT_AGENT_USE_LEGACY_SESSION_KEYS", "true")
+
+    creds = auth_mod.resolve_youtab_runtime_credentials()
+
+    assert creds["api_key"] == token
+    payload = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
+    assert payload["providers"]["youtab"]["agent_key"] == token
+
+    # A removed env switch cannot reactivate the unsupported device grant.
+    with pytest.raises(auth_mod.AuthError) as exc:
+        auth_mod._youtab_device_code_login(open_browser=False)
+    assert exc.value.code == "unsupported_device_code"
+
+
+
+def test_youtab_inference_auth_logs_do_not_include_secret_values(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    from youtab_agent_cli import auth as auth_mod
+
+    youtab_home = tmp_path / "youtab"
+    token = _invoke_jwt(seconds=3600)
+    refreshed_token = _invoke_jwt(seconds=7200)
+    refresh_token = "refresh-secret-token"
+    _setup_youtab_auth(
+        youtab_home,
+        access_token=token,
+        refresh_token=refresh_token,
+        scope=auth_mod.DEFAULT_YOUTAB_SCOPE,
+        expires_at=_future_iso(3600),
+        expires_in=3600,
+    )
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
+
+    def _fake_refresh_access_token(*, client, portal_base_url, client_id, refresh_token):
+        del client, portal_base_url, client_id, refresh_token
+        return {
+            "access_token": refreshed_token,
+            "refresh_token": "refresh-new",
+            "expires_in": 7200,
+            "token_type": "Bearer",
+            "scope": auth_mod.DEFAULT_YOUTAB_SCOPE,
+        }
+
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _fake_refresh_access_token)
+
+    caplog.set_level(logging.DEBUG, logger="youtab_agent_cli.auth")
+    auth_mod.resolve_youtab_runtime_credentials(
+        force_refresh=True,
+    )
+
+    logged = caplog.text
+    assert "using NAS invoke JWT" in logged
+    assert not any(
+        record.levelno >= logging.INFO
+        and "using NAS invoke JWT" in record.getMessage()
+        for record in caplog.records
+    )
+    assert token not in logged
+    assert refreshed_token not in logged
+    assert refresh_token not in logged
+
+
+def test_get_youtab_auth_status_checks_credential_pool(tmp_path, monkeypatch):
+    """get_youtab_auth_status() should find Youtab credentials in the pool
+    even when the auth store has no Youtab provider entry — this is the
+    case when login happened via the dashboard device-code flow which
+    saves to the pool only.
+    """
+
+    youtab_home = tmp_path / "youtab"
+    youtab_home.mkdir(parents=True, exist_ok=True)
+    # Empty auth store — no Youtab provider entry
+    (youtab_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }), encoding="utf-8")
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
+
+    # Seed the credential pool with a Youtab entry
+    from agent.credential_pool import PooledCredential, load_pool
+    pool = load_pool("youtab")
+    token = _invoke_jwt(seconds=3600)
+    expires_at = _future_iso(3600)
+    entry = PooledCredential.from_dict("youtab", {
+        "access_token": token,
+        "refresh_token": "test-refresh-token",
+        "portal_base_url": "https://portal.example.com",
+        "inference_base_url": "https://inference.example.com/v1",
+        "agent_key": token,
+        "agent_key_expires_at": expires_at,
+        "scope": "inference:invoke",
+        "label": "dashboard device_code",
+        "auth_type": "oauth",
+        "source": "manual:dashboard_device_code",
+        "base_url": "https://inference.example.com/v1",
+    })
+    pool.add_entry(entry)
+
+    status = auth.get_youtab_auth_status()
+    assert status["logged_in"] is True
+    assert "example.com" in str(status.get("portal_base_url", ""))
+
+
+def test_get_youtab_auth_status_empty_returns_not_logged_in(tmp_path, monkeypatch):
+    """get_youtab_auth_status() returns logged_in=False when both pool
+    and auth store are empty.
+    """
+
+    youtab_home = tmp_path / "youtab"
+    youtab_home.mkdir(parents=True, exist_ok=True)
+    (youtab_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }), encoding="utf-8")
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
+
+    status = auth.get_youtab_auth_status()
+    assert status["logged_in"] is False
+
+
+
+
+
+
+
+
+# =============================================================================
+# _login_youtab: "Skip (keep current)" must preserve prior provider + model
+# =============================================================================
+
+
+class TestLoginYoutabSkipKeepsCurrent:
+    """When a user runs `youtab model` → Youtab Portal → Skip (keep current) after
+    a successful OAuth login, the prior provider and model MUST be preserved.
+
+    Regression: previously, _update_config_for_provider was called
+    unconditionally after login, which flipped model.provider to "youtab" while
+    keeping the old model.default (e.g. anthropic/claude-opus-4.6 from
+    OpenRouter), leaving the user with a mismatched provider/model pair.
+    """
+
+    def _setup_home_with_openrouter(self, tmp_path, monkeypatch):
+        import yaml
+        youtab_home = tmp_path / "youtab"
+        youtab_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
+
+        config_path = youtab_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "model": {
+                "provider": "openrouter",
+                "default": "anthropic/claude-opus-4.6",
+            },
+        }, sort_keys=False), encoding="utf-8")
+
+        auth_path = youtab_home / "auth.json"
+        auth_path.write_text(json.dumps({
+            "version": 1,
+            "active_provider": "openrouter",
+            "providers": {"openrouter": {"api_key": "sk-or-fake"}},
+        }), encoding="utf-8")
+        return youtab_home, config_path, auth_path
+
+    def _patch_login_internals(self, monkeypatch, *, prompt_returns):
+        """Patch OAuth + model-list + prompt so _login_youtab doesn't hit network."""
+        from youtab_agent_cli import auth as auth_mod
+        import youtab_agent_cli.youtab_picker_catalog as picker
+        import youtab_agent_cli.youtab_account as account
+        import youtab_agent_cli.youtab_subscription as ns
+
+        fake_auth_state = {
+            "access_token": "fake-youtab-token",
+            "agent_key": "fake-agent-key",
+            "inference_base_url": "https://inference-api.youtab.io",
+            "portal_base_url": "https://api.youtab.io",
+            "refresh_token": "fake-refresh",
+            "token_expires_at": 9999999999,
+        }
+        monkeypatch.setattr(
+            auth_mod, "_youtab_device_code_login",
+            lambda **kwargs: dict(fake_auth_state),
+        )
+        monkeypatch.setattr(
+            auth_mod, "_prompt_model_selection",
+            lambda *a, **kw: prompt_returns,
+        )
+        monkeypatch.setattr(picker, "get_curated_youtab_model_ids", lambda: ["synthetic/model"])
+        monkeypatch.setattr(picker, "get_youtab_pricing", lambda *args: {})
+        free_tier_calls = []
+
+        def _check_youtab_free_tier(**kwargs):
+            free_tier_calls.append(kwargs)
+            from types import SimpleNamespace
+            return SimpleNamespace(is_free_tier=False)
+
+        monkeypatch.setattr(account, "get_youtab_portal_account_info", _check_youtab_free_tier)
+        monkeypatch.setattr(
+            picker, "partition_youtab_models_by_tier",
+            lambda ids, p, free_tier=False: (ids, []),
+        )
+        monkeypatch.setattr(ns, "prompt_enable_tool_gateway", lambda cfg: None)
+        return free_tier_calls
+
+    def test_skip_keep_current_preserves_provider_and_model(self, tmp_path, monkeypatch):
+        """User picks Skip → config.yaml untouched, Youtab creds still saved."""
+        import argparse
+        import yaml
+
+        youtab_home, config_path, auth_path = self._setup_home_with_openrouter(
+            tmp_path, monkeypatch,
+        )
+        self._patch_login_internals(monkeypatch, prompt_returns=None)
+
+        args = argparse.Namespace(
+            portal_url=None, inference_url=None, client_id=None, scope=None,
+            no_browser=True, timeout=15.0, ca_bundle=None, insecure=False,
+        )
+        auth._login_youtab(args, auth.PROVIDER_REGISTRY["youtab"])
+
+        # config.yaml model section must be unchanged
+        cfg_after = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert cfg_after["model"]["provider"] == "openrouter"
+        assert cfg_after["model"]["default"] == "anthropic/claude-opus-4.6"
+        assert "base_url" not in cfg_after["model"]
+
+        # auth.json: active_provider restored to openrouter, but Youtab creds saved
+        auth_after = json.loads(auth_path.read_text(encoding="utf-8"))
+        assert auth_after["active_provider"] == "openrouter"
+        assert "youtab" in auth_after["providers"]
+        assert auth_after["providers"]["youtab"]["access_token"] == "fake-youtab-token"
+        # Existing openrouter creds still intact
+        assert auth_after["providers"]["openrouter"]["api_key"] == "sk-or-fake"
+
+    def test_picking_model_switches_to_youtab(self, tmp_path, monkeypatch):
+        """User picks a Youtab model → provider flips to youtab with that model."""
+        import argparse
+        import yaml
+
+        youtab_home, config_path, auth_path = self._setup_home_with_openrouter(
+            tmp_path, monkeypatch,
+        )
+        free_tier_calls = self._patch_login_internals(
+            monkeypatch, prompt_returns="xiaomi/mimo-v2-pro",
+        )
+
+        args = argparse.Namespace(
+            portal_url=None, inference_url=None, client_id=None, scope=None,
+            no_browser=True, timeout=15.0, ca_bundle=None, insecure=False,
+        )
+        auth._login_youtab(args, auth.PROVIDER_REGISTRY["youtab"])
+
+        cfg_after = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert cfg_after["model"]["provider"] == "youtab"
+        assert cfg_after["model"]["default"] == "xiaomi/mimo-v2-pro"
+        assert free_tier_calls == [{"force_fresh": True}]
+
+        auth_after = json.loads(auth_path.read_text(encoding="utf-8"))
+        assert auth_after["active_provider"] == "youtab"
+
+    def test_skip_with_no_prior_active_provider_clears_it(self, tmp_path, monkeypatch):
+        """Fresh install (no prior active_provider) → Skip clears active_provider
+        instead of leaving it as youtab."""
+        import argparse
+        import yaml
+
+        youtab_home = tmp_path / "youtab"
+        youtab_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
+
+        config_path = youtab_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({"model": {}}, sort_keys=False), encoding="utf-8")
+
+        # No auth.json yet — simulates first-run before any OAuth
+        self._patch_login_internals(monkeypatch, prompt_returns=None)
+
+        args = argparse.Namespace(
+            portal_url=None, inference_url=None, client_id=None, scope=None,
+            no_browser=True, timeout=15.0, ca_bundle=None, insecure=False,
+        )
+        auth._login_youtab(args, auth.PROVIDER_REGISTRY["youtab"])
+
+        auth_path = youtab_home / "auth.json"
+        auth_after = json.loads(auth_path.read_text(encoding="utf-8"))
+        # active_provider should NOT be set to "youtab" after Skip
+        assert auth_after.get("active_provider") in {None, ""}
+        # But Youtab creds are still saved
+        assert "youtab" in auth_after.get("providers", {})
+
+
+# =============================================================================
+# persist_youtab_credentials: shared helper for CLI + web dashboard login paths
+# =============================================================================
+
+
+def _full_state_fixture() -> dict:
+    """Shape of the dict returned by _youtab_device_code_login /
+    refresh_youtab_oauth_from_state. Used as helper input."""
+    token = _invoke_jwt(seconds=3600)
+    expires_at = _future_iso(3600)
+    return {
+        "portal_base_url": "https://portal.example.com",
+        "inference_base_url": "https://inference.example.com/v1",
+        "client_id": "youtab-cli",
+        "scope": "inference:invoke",
+        "token_type": "Bearer",
+        "access_token": token,
+        "refresh_token": "refresh-tok",
+        "obtained_at": "2026-04-17T22:00:00+00:00",
+        "expires_at": expires_at,
+        "expires_in": 3600,
+        "agent_key": token,
+        "agent_key_id": None,
+        "agent_key_expires_at": expires_at,
+        "agent_key_expires_in": 3600,
+        "agent_key_reused": False,
+        "agent_key_obtained_at": "2026-04-17T22:00:10+00:00",
+        "tls": {"insecure": False, "ca_bundle": None},
+    }
+
+
+def test_persist_youtab_credentials_writes_both_pool_and_providers(tmp_path, monkeypatch):
+    """Helper must populate BOTH credential_pool.youtab AND providers.youtab.
+
+    Regression guard: before this helper existed, `youtab auth add youtab`
+    wrote only the pool. After the Youtab agent_key's 24h TTL expired, the
+    401-recovery path in run_agent.py called resolve_youtab_runtime_credentials
+    which reads providers.youtab, found it empty, raised AuthError, and the
+    agent failed with "Non-retryable client error". Both stores must stay
+    in sync at write time.
+    """
+
+    youtab_home = tmp_path / "youtab"
+    youtab_home.mkdir(parents=True, exist_ok=True)
+    (youtab_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }), encoding="utf-8")
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
+
+    state = _full_state_fixture()
+    entry = auth.persist_youtab_credentials(state)
+
+    assert entry is not None
+    assert entry.provider == "youtab"
+    assert entry.source == auth.YOUTAB_DEVICE_CODE_SOURCE
+
+    payload = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
+
+    # providers.youtab populated with the full state (new behaviour)
+    singleton = payload["providers"]["youtab"]
+    assert singleton["access_token"] == state["access_token"]
+    assert singleton["refresh_token"] == "refresh-tok"
+    assert singleton["agent_key"] == state["agent_key"]
+    assert singleton["agent_key_expires_at"] == state["agent_key_expires_at"]
+
+    # credential_pool.youtab has exactly one canonical device_code entry
+    pool_entries = payload["credential_pool"]["youtab"]
+    assert len(pool_entries) == 1, pool_entries
+    pool_entry = pool_entries[0]
+    assert pool_entry["source"] == auth.YOUTAB_DEVICE_CODE_SOURCE
+    assert pool_entry["agent_key"] == state["agent_key"]
+    assert pool_entry["inference_base_url"] == "https://inference.example.com/v1"
+
+
+def test_persist_youtab_credentials_idempotent_no_duplicate_pool_entries(tmp_path, monkeypatch):
+    """Re-running persist must upsert — not accumulate duplicate device_code rows.
+
+    Regression guard for the review comment on PR #11858: before normalisation,
+    the helper wrote `manual:device_code` while `_seed_from_singletons` wrote
+    `device_code`, so the pool grew a second duplicate entry on every
+    ``load_pool()``. The helper now writes providers.youtab and lets seeding
+    materialise the pool entry under the canonical ``device_code`` source, so
+    two persists still leave the pool with exactly one row.
+    """
+
+    youtab_home = tmp_path / "youtab"
+    youtab_home.mkdir(parents=True, exist_ok=True)
+    (youtab_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }), encoding="utf-8")
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
+
+    first = _full_state_fixture()
+    auth.persist_youtab_credentials(first)
+
+    second = _full_state_fixture()
+    second_token = _invoke_jwt(seconds=7200)
+    second["access_token"] = second_token
+    second["agent_key"] = second_token
+    second["agent_key_expires_at"] = _future_iso(7200)
+    auth.persist_youtab_credentials(second)
+
+    payload = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
+
+    # providers.youtab reflects the latest write (singleton semantics)
+    assert payload["providers"]["youtab"]["access_token"] == second_token
+    assert payload["providers"]["youtab"]["agent_key"] == second_token
+
+    # credential_pool.youtab has exactly one entry, carrying the latest agent_key
+    pool_entries = payload["credential_pool"]["youtab"]
+    assert len(pool_entries) == 1, pool_entries
+    assert pool_entries[0]["source"] == auth.YOUTAB_DEVICE_CODE_SOURCE
+    assert pool_entries[0]["agent_key"] == second_token
+    # And no stray `manual:device_code` / `manual:dashboard_device_code` rows
+    assert not any(
+        e["source"].startswith("manual:") for e in pool_entries
+    )
+
+
+def test_persist_youtab_credentials_no_label_uses_auto_derived(tmp_path, monkeypatch):
+    """When the caller doesn't pass ``label``, the auto-derived fingerprint
+    is used (unchanged default behaviour — regression guard).
+    """
+
+    youtab_home = tmp_path / "youtab"
+    youtab_home.mkdir(parents=True, exist_ok=True)
+    (youtab_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }), encoding="utf-8")
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
+
+    entry = auth.persist_youtab_credentials(_full_state_fixture())
+    assert entry is not None
+    # label_from_token derives from the access_token; exact value depends on
+    # the fingerprinter but it must not be empty and must not equal an
+    # arbitrary user string we never passed.
+    assert entry.label
+    assert entry.label != "my-personal"
+
+    # No "label" key embedded in providers.youtab when the caller didn't supply one.
+    payload = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
+    assert "label" not in payload["providers"]["youtab"]
+
+
+def test_refresh_token_reuse_detection_surfaces_actionable_message():
+    """Regression for #15099.
+
+    When the Youtab Portal server returns ``invalid_grant`` with
+    ``error_description`` containing "reuse detected", Youtab must surface an
+    actionable message explaining that an external process consumed the
+    refresh token.  The default opaque "Refresh token reuse detected; please
+    re-authenticate" string led users to report this as a Youtab persistence
+    bug when the true cause is external RT consumption (monitoring scripts,
+    custom self-heal hooks).
+    """
+
+    class _FakeResponse:
+        status_code = 400
+
+        def json(self):
+            return {
+                "error": "invalid_grant",
+                "error_description": "Refresh token reuse detected; please re-authenticate",
+            }
+
+    class _FakeClient:
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    with pytest.raises(auth.AuthError) as exc_info:
+        auth._refresh_access_token(
+            client=_FakeClient(),
+            portal_base_url="https://api.youtab.io",
+            client_id="youtab-cli",
+            refresh_token="rt_consumed_elsewhere",
+        )
+
+    message = str(exc_info.value)
+    assert "refresh-token reuse" in message.lower() or "refresh token reuse" in message.lower()
+    # The message must mention the external-process cause and give next steps.
+    assert "external process" in message.lower() or "monitoring script" in message.lower()
+    assert "youtab auth add youtab" in message.lower()
+    # Must still be classified as invalid_grant + relogin_required.
+    assert exc_info.value.code == "invalid_grant"
+    assert exc_info.value.relogin_required is True
+
+
+def test_refresh_token_exchange_sends_refresh_token_header():
+    """Youtab refresh tokens must be sent in a header so sandbox proxies can
+    substitute placeholder credentials without parsing form bodies.
+    """
+
+    class _FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"access_token": "access-2", "refresh_token": "refresh-2"}
+
+    class _FakeClient:
+        def __init__(self):
+            self.kwargs = None
+
+        def post(self, *args, **kwargs):
+            del args
+            self.kwargs = kwargs
+            return _FakeResponse()
+
+    client = _FakeClient()
+
+    payload = auth._refresh_access_token(
+        client=client,
+        portal_base_url="https://api.youtab.io",
+        client_id="youtab-cli",
+        refresh_token="refresh-1",
+    )
+
+    assert payload["access_token"] == "access-2"
+    assert payload["refresh_token"] == "refresh-2"
+    assert client.kwargs is not None
+    assert client.kwargs["headers"]["x-youtab-refresh-token"] == "refresh-1"
+    assert client.kwargs["data"] == {
+        "grant_type": "refresh_token",
+        "client_id": "youtab-cli",
+    }
+
+
+
+
+# =============================================================================
+# Shared Youtab token store — cross-profile persistence (Codex-style auto-import)
+# =============================================================================
+
+
+@pytest.fixture
+def shared_store_env(tmp_path, monkeypatch):
+    """Redirect YOUTAB_AGENT_SHARED_AUTH_DIR to a tmp_path.
+
+    Required for every test that exercises the shared Youtab store — the
+    in-auth.py seat belt refuses to touch the real user's shared store
+    under pytest, so tests that forget this fixture fail loudly instead
+    of corrupting real state.
+    """
+    shared_dir = tmp_path / "shared"
+    monkeypatch.setenv("YOUTAB_AGENT_SHARED_AUTH_DIR", str(shared_dir))
+    return shared_dir
+
+
+def test_shared_store_seat_belt_refuses_real_home_under_pytest(monkeypatch):
+    """Without YOUTAB_AGENT_SHARED_AUTH_DIR override, the seat belt must trip.
+
+    Mirrors the existing ``_auth_file_path`` seat belt: forgetting to
+    redirect this store in a test must fail loudly instead of silently
+    writing to the user's real ``~/.youtab-agent-runtime/shared/`` across CI runs.
+    """
+
+    monkeypatch.delenv("YOUTAB_AGENT_SHARED_AUTH_DIR", raising=False)
+
+    with pytest.raises(RuntimeError, match="shared Youtab auth store"):
+        auth._youtab_shared_store_path()
+
+
+def _assert_private_shared_store(path):
+    if os.name == "nt":
+        result = subprocess.run(
+            [
+                "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                "$acl=Get-Acl -LiteralPath $env:YOUTAB_TEST_ACL_PATH; "
+                "$sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; "
+                "if(-not $acl.AreAccessRulesProtected -or $acl.Access.Count -ne 1) {exit 2}; "
+                "$rule=$acl.Access[0]; "
+                "if($rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value "
+                "-ne $sid.Value -or $rule.IsInherited -or "
+                "$rule.AccessControlType -ne 'Allow' -or "
+                "$rule.FileSystemRights -ne 'FullControl') {exit 3}",
+            ],
+            env={**os.environ, "YOUTAB_TEST_ACL_PATH": str(path)},
+            capture_output=True, text=True, timeout=20,
+        )
+        assert result.returncode == 0, result.stderr
+    else:
+        info = path.stat()
+        assert info.st_uid == os.getuid()
+        assert stat.S_IMODE(info.st_mode) == 0o600
+
+
+def test_shared_store_write_and_read_roundtrip(shared_store_env):
+    """Write → read must preserve refresh_token + OAuth URLs."""
+
+    state = _full_state_fixture()
+    auth._write_shared_youtab_state(state)
+
+    path = auth._youtab_shared_store_path()
+    assert path.is_file()
+
+    _assert_private_shared_store(path)
+
+    loaded = auth._read_shared_youtab_state()
+    assert loaded is not None
+    assert loaded["refresh_token"] == "refresh-tok"
+    assert loaded["access_token"] == state["access_token"]
+    assert loaded["portal_base_url"] == "https://portal.example.com"
+    assert loaded["inference_base_url"] == "https://inference.example.com/v1"
+    # Volatile agent_key MUST NOT be persisted to the shared store
+    # (24h TTL, profile-specific — only long-lived OAuth tokens are
+    # cross-profile useful).
+    assert "agent_key" not in loaded
+
+
+def test_persist_youtab_credentials_mirrors_to_shared_store(
+    tmp_path, monkeypatch, shared_store_env,
+):
+    """persist_youtab_credentials must populate BOTH per-profile auth.json
+    AND the shared store, so a future profile's `youtab auth add youtab
+    --type oauth` can one-tap import instead of redoing device-code.
+    """
+
+    youtab_home = tmp_path / "youtab"
+    youtab_home.mkdir(parents=True, exist_ok=True)
+    (youtab_home / "auth.json").write_text(
+        json.dumps({"version": 1, "providers": {}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
+
+    auth.persist_youtab_credentials(_full_state_fixture())
+
+    # Per-profile auth.json populated
+    payload = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
+    assert "youtab" in payload.get("providers", {})
+
+    # Shared store populated with the same refresh_token
+    shared = auth._read_shared_youtab_state()
+    assert shared is not None
+    assert shared["refresh_token"] == "refresh-tok"
+
+    # Shared file path lives under the tmp override, NOT the real home
+    assert str(auth._youtab_shared_store_path()).startswith(str(shared_store_env))
+
+
+
+
+def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):
+    """Happy path: stored refresh_token is accepted, forced refresh
+    returns a fresh access_token JWT, and the returned dict has
+    every field persist_youtab_credentials() needs.
+    """
+    from youtab_agent_cli import auth as auth_mod
+
+    auth_mod._write_shared_youtab_state(_full_state_fixture())
+    fresh_jwt = _invoke_jwt(seconds=7200)
+
+    def _fake_refresh(state, **kwargs):
+        # Simulate portal returning a fresh inference JWT.
+        assert kwargs.get("force_refresh") is True
+        return {
+            **state,
+            "access_token": fresh_jwt,
+            "refresh_token": "fresh-refresh-tok",  # rotated
+            "agent_key": fresh_jwt,
+            "agent_key_expires_at": _future_iso(7200),
+        }
+
+    monkeypatch.setattr(auth_mod, "refresh_youtab_oauth_from_state", _fake_refresh)
+
+    result = auth_mod._try_import_shared_youtab_state()
+
+    assert result is not None
+    assert result["access_token"] == fresh_jwt
+    assert result["refresh_token"] == "fresh-refresh-tok"
+    assert result["agent_key"] == fresh_jwt
+    # Preserved from shared state
+    assert result["portal_base_url"] == "https://portal.example.com"
+    assert result["client_id"] == "youtab-cli"
+
+
+
+
+
+
+
+
+
+
+class TestStalePortalBaseUrlMigration:
+    """_migrate_stale_youtab_portal_url auto-corrects stale portal_base_url on load."""
+
+    def test_migrates_stale_portal_url_on_load(self, tmp_path, monkeypatch):
+
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
+        auth_file = tmp_path / "auth.json"
+        auth_file.write_text(json.dumps({
+            "version": 1,
+            "active_provider": "youtab",
+            "providers": {
+                "youtab": {
+                    "portal_base_url": "https://api.youtab.io",
+                    "access_token": "test-token",
+                    "refresh_token": "test-refresh",
+                }
+            },
+        }), encoding="utf-8")
+
+        store = auth._load_auth_store(auth_file)
+        youtab = store["providers"]["youtab"]
+        assert youtab["portal_base_url"] == auth.DEFAULT_YOUTAB_PORTAL_URL
+
+
+
+
+
+    def test_runtime_credentials_rejects_http_for_production_portal(
+        self, tmp_path, monkeypatch,
+    ):
+        """An allowlisted production host is still unsafe over plain HTTP."""
+        from youtab_agent_cli import auth as auth_mod
+
+        youtab_home = tmp_path / "youtab"
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
+        _setup_youtab_auth(
+            youtab_home,
+            access_token=_invoke_jwt(seconds=-60),
+            refresh_token="valid-refresh",
+            expires_at=_future_iso(-60),
+            expires_in=0,
+        )
+        auth_file = youtab_home / "auth.json"
+        store = json.loads(auth_file.read_text(encoding="utf-8"))
+        store["providers"]["youtab"]["portal_base_url"] = (
+            "http://api.youtab.io"
+        )
+        auth_file.write_text(json.dumps(store, indent=2), encoding="utf-8")
+
+        refresh_calls = []
+
+        def _fake_refresh_access_token(
+            *, client, portal_base_url, client_id, refresh_token,
+        ):
+            del client, client_id, refresh_token
+            refresh_calls.append(portal_base_url)
+            return {
+                "access_token": _invoke_jwt(seconds=3600),
+                "refresh_token": "new-refresh",
+                "expires_in": 3600,
+                "scope": "inference:invoke",
+            }
+
+        monkeypatch.setattr(
+            auth_mod, "_refresh_access_token", _fake_refresh_access_token
+        )
+
+        auth_mod.resolve_youtab_runtime_credentials()
+        assert refresh_calls == [auth_mod.DEFAULT_YOUTAB_PORTAL_URL]
+
+
+@pytest.mark.parametrize("resolver", ["access", "runtime", "pure"])
+@pytest.mark.parametrize("ca_source", ["explicit", "stored", "environment"])
+def test_account_refresh_preserves_effective_ca(tmp_path, monkeypatch, resolver, ca_source):
+    import ssl
+    from contextlib import nullcontext
+
+    home = tmp_path / "account"
+    _setup_youtab_auth(home)
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
+    ca_path = str(tmp_path / "organization-ca.pem")
+    Path(ca_path).write_text("synthetic CA parsed by the context stub", encoding="utf-8")
+    state_path = home / "auth.json"
+    store = json.loads(state_path.read_text(encoding="utf-8"))
+    state = store["providers"]["youtab"]
+    state["tls"] = {"insecure": True, "ca_bundle": ca_path if ca_source == "stored" else None}
+    state_path.write_text(json.dumps(store), encoding="utf-8")
+    if ca_source == "environment":
+        monkeypatch.setenv("YOUTAB_AGENT_CA_BUNDLE", ca_path)
+    explicit_ca = ca_path if ca_source == "explicit" else None
+    contexts = []
+    def context_factory(**kwargs):
+        contexts.append(kwargs.get("cafile"))
+        return ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    monkeypatch.setattr(ssl, "create_default_context", context_factory)
+    monkeypatch.setattr(auth, "_youtab_shared_store_lock", lambda **kw: nullcontext())
+    monkeypatch.setattr(auth, "_merge_shared_youtab_oauth_state", lambda state: False)
+    monkeypatch.setattr(auth, "_write_shared_youtab_state", lambda *a, **kw: None)
+    new_token = _invoke_jwt(seconds=3600)
+    monkeypatch.setattr(auth, "_refresh_access_token", lambda **kw: {
+        "access_token": new_token, "refresh_token": "synthetic-rotated-refresh",
+        "expires_in": 3600, "scope": "inference:invoke", "token_type": "Bearer",
+    })
+    if resolver == "access":
+        assert auth.resolve_youtab_access_token(insecure=True, ca_bundle=explicit_ca) == new_token
+    elif resolver == "runtime":
+        result = auth.resolve_youtab_runtime_credentials(
+            insecure=True, ca_bundle=explicit_ca, force_refresh=True,
+        )
+        assert result["api_key"] == new_token
+    else:
+        if ca_source == "explicit":
+            result = auth.refresh_youtab_oauth_pure(
+                state["access_token"], state["refresh_token"], state["client_id"],
+                state["portal_base_url"], state["inference_base_url"],
+                ca_bundle=explicit_ca, insecure=True, force_refresh=True,
+            )
+        else:
+            result = auth.refresh_youtab_oauth_from_state(state, force_refresh=True)
+        assert result["refresh_token"] == "synthetic-rotated-refresh"
+        assert result["tls"] == {"insecure": False, "ca_bundle": ca_path}
+    if resolver != "pure":
+        saved = json.loads(state_path.read_text(encoding="utf-8"))["providers"]["youtab"]
+        assert saved["refresh_token"] == "synthetic-rotated-refresh"
+        assert saved["tls"] == {"insecure": False, "ca_bundle": ca_path}
+        assert saved["access_token"] == new_token
+    assert ca_path in contexts
+
+
+@pytest.mark.parametrize("resolver", ["access", "runtime"])
+def test_certificate_connection_failure_keeps_account(tmp_path, monkeypatch, resolver):
+    from contextlib import nullcontext
+    import httpx
+
+    home = tmp_path / "account"
+    _setup_youtab_auth(home, access_token=_invoke_jwt(seconds=-120))
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
+    state_path = home / "auth.json"
+    before = state_path.read_bytes()
+    monkeypatch.setattr(auth, "_youtab_shared_store_lock", lambda **kw: nullcontext())
+    monkeypatch.setattr(auth, "_merge_shared_youtab_oauth_state", lambda state: False)
+    monkeypatch.setattr(auth, "_write_shared_youtab_state", lambda *a, **kw: None)
+    def fail_refresh(**kwargs):
+        raise httpx.ConnectError("synthetic CERTIFICATE_VERIFY_FAILED")
+    monkeypatch.setattr(auth, "_refresh_access_token", fail_refresh)
+    quarantine = []
+    monkeypatch.setattr(auth, "_quarantine_youtab_oauth_state", lambda *a, **kw: quarantine.append(True))
+    monkeypatch.setattr(auth, "_quarantine_youtab_pool_entries", lambda *a, **kw: quarantine.append(True))
+    with pytest.raises(httpx.ConnectError, match="CERTIFICATE_VERIFY_FAILED"):
+        if resolver == "access":
+            auth.resolve_youtab_access_token(insecure=True)
+        else:
+            auth.resolve_youtab_runtime_credentials(insecure=True, force_refresh=True)
+    assert quarantine == []
+    assert state_path.read_bytes() == before
+
+
+def test_rotated_refresh_keeps_ca_before_inference_validation_failure(tmp_path, monkeypatch):
+    import ssl
+    from contextlib import nullcontext
+
+    home = tmp_path / "account"
+    _setup_youtab_auth(home)
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
+    ca_path = str(tmp_path / "organization-ca.pem")
+    Path(ca_path).write_text("synthetic CA parsed by the context stub", encoding="utf-8")
+    monkeypatch.setattr(ssl, "create_default_context", lambda **kw: ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT))
+    monkeypatch.setattr(auth, "_youtab_shared_store_lock", lambda **kw: nullcontext())
+    monkeypatch.setattr(auth, "_merge_shared_youtab_oauth_state", lambda state: False)
+    monkeypatch.setattr(auth, "_write_shared_youtab_state", lambda *a, **kw: None)
+    unusable_inference_token = _invoke_jwt(scope="billing:manage")
+    monkeypatch.setattr(auth, "_refresh_access_token", lambda **kw: {
+        "access_token": unusable_inference_token,
+        "refresh_token": "synthetic-rotated-refresh",
+        "expires_in": 3600, "scope": "billing:manage",
+    })
+    with pytest.raises(auth.AuthError):
+        auth.resolve_youtab_runtime_credentials(ca_bundle=ca_path, force_refresh=True)
+    saved = json.loads((home / "auth.json").read_text(encoding="utf-8"))["providers"]["youtab"]
+    assert saved["refresh_token"] == "synthetic-rotated-refresh"
+    assert saved["access_token"] == unusable_inference_token
+    assert saved["tls"] == {"insecure": False, "ca_bundle": ca_path}
