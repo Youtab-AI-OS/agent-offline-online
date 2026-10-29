@@ -2658,7 +2658,7 @@ function getInnoUpdateController() {
       return tokens.accessToken
     },
     selectOffline: async () => {
-      const result = await dialog.showOpenDialog({ title: 'Choose signed Youtab offline update metadata', properties: ['openFile'], filters: [{ name: 'Signed Youtab update', extensions: ['json'] }] })
+      const result = await dialog.showOpenDialog(mainWindow, { title: 'Choose signed Youtab offline update metadata', properties: ['openFile'], filters: [{ name: 'Signed Youtab update', extensions: ['json'] }] })
 
       return result.canceled ? null : result.filePaths[0] ?? null
     },
@@ -2670,7 +2670,7 @@ function getInnoUpdateController() {
     confirm: async (release, source) => {
       await requireIdleOwnedBackendsForInnoUpdate()
 
-      const decision = await dialog.showMessageBox({ type: 'question', buttons: ['Install update', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
+      const decision = await dialog.showMessageBox(mainWindow, { type: 'question', buttons: ['Install update', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
         message: `Install Youtab ${release.payload.version}?`,
         detail: `Source: ${source}\nBuild: ${release.payload.buildId}\nSequence: ${release.payload.sequence}\nCode: ${release.payload.sourceSha}\n\nYoutab will close while the verified program update is applied. Your chats, profiles and credentials stay in their current home.` })
 
@@ -7361,7 +7361,9 @@ async function writeProfileInferenceToken(profile: string, token: string | null)
     const timer = setTimeout(() => {
       child.kill()
       reject(new Error('Profile credential update timed out'))
-    }, 15_000)
+    // The CLI may legitimately spend 15s waiting for its auth-store lock.
+    // Leave a second 15s for cold Windows process startup and the actual write.
+    }, 30_000)
     child.once('error', () => {
       clearTimeout(timer)
       reject(new Error('Profile credential update failed'))
@@ -12076,6 +12078,12 @@ ipcMain.handle('youtab:logs:reveal', async () => {
 })
 
 ipcMain.handle('youtab:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: youtabLog.slice(-200) }))
+ipcMain.handle('youtab:logs:save', async () => {
+  await flushDesktopLogBufferAsync()
+  await fs.promises.mkdir(path.dirname(DESKTOP_LOG_PATH), { recursive: true })
+  if (!fileExists(DESKTOP_LOG_PATH)) {await fs.promises.appendFile(DESKTOP_LOG_PATH, '')}
+  return downloadExistingFile({ path: DESKTOP_LOG_PATH, mode: 'save-as' }, nativeDownloadHost())
+})
 
 function isExecutableFile(filePath) {
   if (!filePath || !path.isAbsolute(filePath)) {

@@ -114,7 +114,7 @@ describe('Youtab REST parity helpers (hub / mcp / maintenance)', () => {
     await runDebugShare()
 
     expect(api).toHaveBeenCalledWith(
-      expect.objectContaining({ path: '/api/ops/debug-share', method: 'POST', timeoutMs: 120_000 })
+      expect.objectContaining({ path: '/api/ops/debug-share', method: 'POST', body: { confirm_upload: true, redact: true }, timeoutMs: 120_000 })
     )
   })
 

@@ -183,6 +183,7 @@ declare global {
         onChanged: (callback: (payload: { level: number; percent: number }) => void) => () => void
       }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
+      saveLogs: () => Promise<YoutabExportResult>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<YoutabReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>

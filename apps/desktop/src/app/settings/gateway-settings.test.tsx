@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProfileInfo } from '@/types/youtab'
 
 const getConnectionConfig = vi.fn()
+const saveLogs = vi.fn(async () => ({ status: 'saved', path: '/tmp/desktop.log' }))
 const profiles = atom<ProfileInfo[]>([])
 
 vi.mock('@/store/profile', () => ({
@@ -49,7 +50,7 @@ beforeEach(() => {
   getConnectionConfig.mockResolvedValue(localConnection)
   Object.defineProperty(window, 'youtabDesktop', {
     configurable: true,
-    value: { getConnectionConfig }
+    value: { getConnectionConfig, saveLogs }
   })
 })
 
@@ -59,6 +60,12 @@ afterEach(() => {
 })
 
 describe('GatewaySettings', () => {
+  it('lets the user save a local copy of desktop diagnostics', async () => {
+    render(<GatewaySettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Save logs' }))
+    await waitFor(() => expect(saveLogs).toHaveBeenCalledOnce())
+  })
+
   it('labels local mode as default inheritance for a named profile', async () => {
     render(<GatewaySettings />)
     expect(await screen.findByText('Local gateway')).toBeTruthy()

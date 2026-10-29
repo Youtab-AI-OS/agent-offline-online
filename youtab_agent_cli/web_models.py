@@ -10,7 +10,8 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, SecretStr, StrictBool, field_validator
+from fastapi import HTTPException
+from pydantic import BaseModel, SecretStr, StrictBool, field_validator, model_validator
 
 
 # --- from web_server.py (originally lines 1273-1372) ---
@@ -280,12 +281,19 @@ class LearningNodeEdit(BaseModel):
 # --- from web_server.py (originally lines 3786-3792) ---
 
 class DebugShareRequest(BaseModel):
-    # Redaction is ON by default — force-mode scrubs credential-shaped tokens
-    # out of log content before it leaves the machine. The toggle exists so an
-    # operator who knows the logs are clean can opt out for fuller fidelity.
+    # The dashboard must obtain an explicit acknowledgement before uploading.
+    confirm_upload: bool = False
+    # The dashboard route requires redaction. The CLI has its own separate
+    # opt-out and confirmation flow.
     redact: bool = True
     # Recent log lines included in the summary tail (full logs are separate).
     lines: int = 200
+
+    @model_validator(mode="after")
+    def require_safe_upload(self):
+        if not self.confirm_upload or not self.redact:
+            raise HTTPException(status_code=400, detail="Explicit consent and redaction are required for debug upload")
+        return self
 
 
 # --- from web_server.py (originally lines 4492-4493) ---

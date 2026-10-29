@@ -75,7 +75,9 @@ export async function handoffInnoUpdate(
         } catch { /* Partial or diagnostic lines cannot acknowledge a handoff. */ }
       }
     })
-    await waitForUninstallReady(child, handoff, 660000)
+    // Extraction alone may use 15 minutes; leave bounded time for the full
+    // payload hash and Windows resource preflight on slower customer disks.
+    await waitForUninstallReady(child, handoff, 1200000)
     await waitForUninstallReady(child, handoff, 45000, 'stopped')
     const backend = await host.releaseBackend()
 

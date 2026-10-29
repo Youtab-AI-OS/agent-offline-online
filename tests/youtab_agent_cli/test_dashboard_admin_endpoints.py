@@ -865,7 +865,7 @@ class TestDebugShareEndpoint:
         (logs / "gateway.log").write_text("gw line\n", encoding="utf-8")
 
 
-    def test_redact_false_is_honored(self, monkeypatch):
+    def test_unredacted_upload_is_refused(self, monkeypatch):
         import youtab_agent_cli.debug as dbg
 
         monkeypatch.setattr(
@@ -875,11 +875,10 @@ class TestDebugShareEndpoint:
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
         monkeypatch.setattr("youtab_agent_cli.dump.run_dump", lambda a: None)
 
-        r = self.client.post("/api/ops/debug-share", json={"redact": False})
-        assert r.status_code == 200
-        assert r.json()["redacted"] is False
+        r = self.client.post("/api/ops/debug-share", json={"confirm_upload": True, "redact": False})
+        assert r.status_code == 400
 
-    def test_default_body_redacts(self, monkeypatch):
+    def test_explicit_consent_redacts(self, monkeypatch):
         import youtab_agent_cli.debug as dbg
 
         monkeypatch.setattr(
@@ -889,8 +888,8 @@ class TestDebugShareEndpoint:
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
         monkeypatch.setattr("youtab_agent_cli.dump.run_dump", lambda a: None)
 
-        # No JSON body at all — should default redact=True.
-        r = self.client.post("/api/ops/debug-share")
+        assert self.client.post("/api/ops/debug-share").status_code == 400
+        r = self.client.post("/api/ops/debug-share", json={"confirm_upload": True})
         assert r.status_code == 200
         assert r.json()["redacted"] is True
 
@@ -906,7 +905,7 @@ class TestDebugShareEndpoint:
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
         monkeypatch.setattr("youtab_agent_cli.dump.run_dump", lambda a: None)
 
-        r = self.client.post("/api/ops/debug-share", json={"redact": True})
+        r = self.client.post("/api/ops/debug-share", json={"confirm_upload": True, "redact": True})
         assert r.status_code == 502
 
 

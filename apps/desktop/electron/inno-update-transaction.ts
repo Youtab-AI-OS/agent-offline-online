@@ -531,7 +531,7 @@ try {
   Write-YoutabUpdateSignal $updates 'active.json' $activeContent
   Write-YoutabUpdateProgress 'prepare' 'Verifying and extracting the signed full Installer into a separate program stage.'
   $stage=[IO.Path]::Combine($transaction.Directory,'payload')
-  $extract=Invoke-YoutabBoundedInstaller $request.installer @('/YOUTABPAYLOADONLY','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/DIR='+$stage),('/LOG='+[IO.Path]::Combine($transaction.Directory,'extract.log'))) 600000
+  $extract=Invoke-YoutabBoundedInstaller $request.installer @('/YOUTABPAYLOADONLY','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/DIR='+$stage),('/LOG='+[IO.Path]::Combine($transaction.Directory,'extract.log'))) 900000
   if ($extract -ne 0) {throw 'The signed Installer could not stage its complete offline payload.'}
   [void](Assert-YoutabPayloadManifest $stage $release.payloadManifestSha256 $request.dataContractsSha256)
   [void](Save-YoutabUpdateRegistration $transaction)

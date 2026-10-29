@@ -181,7 +181,7 @@ if([IO.File]::Exists(${literal(marker)})) {throw 'Killed descendant continued wr
       }
     })
 
-    it.each([0, -1, 600001])('rejects invalid timeout %s before launching any process', timeout => {
+    it.each([0, -1, 900001])('rejects invalid timeout %s before launching any process', timeout => {
       const f = fixture()
 
       try {

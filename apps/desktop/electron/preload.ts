@@ -181,6 +181,7 @@ contextBridge.exposeInMainWorld('youtabDesktop', {
     }
   },
   revealLogs: () => ipcRenderer.invoke('youtab:logs:reveal'),
+  saveLogs: () => ipcRenderer.invoke('youtab:logs:save'),
   getRecentLogs: () => ipcRenderer.invoke('youtab:logs:recent'),
   readDir: dirPath => ipcRenderer.invoke('youtab:fs:readDir', dirPath),
   gitRoot: startPath => ipcRenderer.invoke('youtab:fs:gitRoot', startPath),

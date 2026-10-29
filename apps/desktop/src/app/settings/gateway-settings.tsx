@@ -1477,10 +1477,15 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         <div className="mt-6 grid gap-1">
           <ListRow
             action={
-              <Button onClick={() => void window.youtabDesktop?.revealLogs()} size="sm" variant="textStrong">
-                <FileText />
-                {g.openLogs}
-              </Button>
+              <div className="flex gap-2">
+                <Button onClick={() => void window.youtabDesktop?.revealLogs()} size="sm" variant="textStrong">
+                  <FileText />
+                  {g.openLogs}
+                </Button>
+                <Button onClick={() => void window.youtabDesktop?.saveLogs().catch(error => notifyError(error, g.saveLogs))} size="sm" variant="textStrong">
+                  {g.saveLogs}
+                </Button>
+              </div>
             }
             description={g.diagnosticsDesc}
             title={g.diagnostics}

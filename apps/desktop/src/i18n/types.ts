@@ -624,6 +624,7 @@ export interface Translations {
       diagnostics: string
       diagnosticsDesc: string
       openLogs: string
+      saveLogs: string
       incompleteTitle: string
       incompleteSignIn: string
       incompleteToken: string
@@ -1194,6 +1195,7 @@ export interface Translations {
       backupDesc: string
       debugShare: string
       debugShareDesc: string
+      debugShareConfirm: string
       debugShareRunning: string
       debugShareLinks: string
       debugShareFailed: string

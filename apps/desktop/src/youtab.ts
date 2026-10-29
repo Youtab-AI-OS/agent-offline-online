@@ -1804,7 +1804,7 @@ export function runDebugShare(): Promise<DebugShareResponse> {
   return window.youtabDesktop.api<DebugShareResponse>({
     path: '/api/ops/debug-share',
     method: 'POST',
-    body: {},
+    body: { confirm_upload: true, redact: true },
     // Synchroyoutab upload of report + logs to the paste service.
     timeoutMs: 120_000
   })

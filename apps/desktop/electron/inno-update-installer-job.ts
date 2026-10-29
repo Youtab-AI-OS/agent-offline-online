@@ -81,7 +81,7 @@ public static class YoutabInstallerJobNative {
     return false;
   }
   public static int Run(string executable,string[] arguments,int timeoutMs) {
-    if(timeoutMs<1 || timeoutMs>600000) throw new ArgumentOutOfRangeException("timeoutMs");
+    if(timeoutMs<1 || timeoutMs>900000) throw new ArgumentOutOfRangeException("timeoutMs");
     if(String.IsNullOrEmpty(executable) || executable.IndexOf('\0')>=0 || executable.Length<3 || !Char.IsLetter(executable[0]) || executable[1]!=':' || (executable[2]!='\\' && executable[2]!='/')) throw new ArgumentException("A local absolute executable is required.");
     if(!File.Exists(executable) || !String.Equals(Path.GetExtension(executable),".exe",StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("A local absolute executable is required.");
     executable=Path.GetFullPath(executable);
