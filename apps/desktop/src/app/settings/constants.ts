@@ -445,6 +445,9 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     enabled: 'File Checkpoints',
     maxSnapshots: 'Checkpoint Limit'
   },
+  projectTaskBackup: {
+    required: 'Require Project Backup Before File Changes'
+  },
   voice: {
     recordKey: 'Voice Shortcut',
     maxRecordingSeconds: 'Max Recording Length',
@@ -594,6 +597,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   checkpoints: {
     enabled: 'Create rollback snapshots before file edits.'
   },
+  projectTaskBackup: {
+    required: 'Verify a project backup before file-changing tools run in new chats. Requires a selected project and may take time for large projects.'
+  },
   memory: {
     memoryEnabled: 'Save durable memories that can help future sessions.',
     userProfileEnabled: 'Maintain a compact profile of user preferences.'
@@ -682,7 +688,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'security.allow_private_urls',
       'browser.allow_private_urls',
       'browser.auto_local_for_private_urls',
-      'checkpoints.enabled'
+      'checkpoints.enabled',
+      'project_task_backup.required'
     ]
   },
   {

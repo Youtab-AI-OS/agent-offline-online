@@ -20,10 +20,17 @@
  */
 
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 import { stampExeIdentity } from './set-exe-identity.mjs'
 
 export default async function afterPack(context) {
+  if (context.electronPlatformName === 'darwin') {
+    const app = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`)
+    // Finder metadata copied into Electron.app makes Developer ID signing fail.
+    execFileSync('/usr/bin/find', [app, '-exec', '/usr/bin/xattr', '-c', '{}', '+'])
+    return
+  }
   if (context.electronPlatformName !== 'win32') {
     return
   }
