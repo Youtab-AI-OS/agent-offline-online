@@ -27,7 +27,7 @@ import { ListRow, SectionHeading, SettingsContent } from './primitives'
 import { UninstallSection } from './uninstall-section'
 import { updatePolicyCopy } from './update-policy-copy'
 
-const RELEASE_NOTES_URL = 'https://github.com/eimanghazaei/Youtab-Agent-Runtime/releases'
+const RELEASE_NOTES_URL = 'https://github.com/Youtab-AI-OS/agent-offline-online/releases'
 
 function relativeTime(ms: number | undefined, a: Translations['settings']['about']) {
   if (!ms) {

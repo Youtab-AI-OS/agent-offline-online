@@ -398,6 +398,30 @@ test('resolveInstallScript prefers a cached script without touching the network'
   }
 })
 
+test('packaged macOS bootstrap uses its bundled installer without a GitHub download', async () => {
+  const home = mkTmpHome()
+  const resources = path.join(home, 'resources')
+  const bundled = path.join(resources, 'bootstrap', SCRIPT_NAME)
+  fs.mkdirSync(path.dirname(bundled), { recursive: true })
+  fs.writeFileSync(bundled, '#!/bin/sh\necho bundled\n')
+
+  try {
+    const result = await resolveInstallScript({
+      installStamp: { commit: 'a'.repeat(40) },
+      sourceRepoRoot: null,
+      youtabHome: home,
+      bundledResourcesPath: resources,
+      emit: () => {},
+      _download: async () => { throw new Error('unexpected network request') }
+    })
+    assert.equal(result.source, 'bundled')
+    assert.equal(result.path, bundled)
+    assert.equal(result.commit, 'a'.repeat(40))
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('resolveInstallScript falls back to the installed agent checkout on a 404', async () => {
   const home = mkTmpHome()
 

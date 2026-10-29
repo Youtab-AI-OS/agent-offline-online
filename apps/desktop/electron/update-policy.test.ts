@@ -10,9 +10,10 @@ import { readDesktopUpdatePolicy, selectedInnoUpdateChannel, validateDesktopUpda
 const fixtures: string[] = []
 
 function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'youtab-update-policy-test-'))
+  const tempRoot = fs.realpathSync(os.tmpdir())
+  const root = fs.mkdtempSync(path.join(tempRoot, 'youtab-update-policy-test-'))
 
-  if (!path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep)) {throw new Error('Unsafe fixture boundary')}
+  if (!path.resolve(root).startsWith(tempRoot + path.sep)) {throw new Error('Unsafe fixture boundary')}
   fixtures.push(root)
 
   return { root, config: path.join(root, 'private-app', 'updates.json') }

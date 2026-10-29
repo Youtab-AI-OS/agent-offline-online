@@ -1503,9 +1503,8 @@ def init_agent(
     # from the persisted string and is used only to place an early cache marker.
     agent._cached_system_prompt_static: Optional[str] = None
     
-    # Mandatory project-task backup is separate from optional convenience
-    # checkpoints and cannot be disabled by approval/checkpoint UI toggles.
-    agent._project_backup_required = True
+    from youtab_agent_cli.config import load_config
+    agent._project_backup_required = load_config().get("project_task_backup", {}).get("required") is True
 
     # Filesystem checkpoint manager (transparent — not a tool)
     from tools.checkpoint_manager import CheckpointManager

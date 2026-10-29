@@ -39,6 +39,15 @@ def test_read_only_surface_and_plain_chat_need_no_backup(context, monkeypatch):
     assert agent._project_backup_state["receipt"] is None
 
 
+def test_file_creation_without_required_backup_does_not_need_project(context, monkeypatch):
+    agent, _, _ = context
+    agent._project_backup_required = False
+    monkeypatch.setattr(gate, "_scope", lambda task: pytest.fail("file creation required a project"))
+    monkeypatch.setattr(gate, "snapshot", lambda *a, **k: pytest.fail("file creation forced a backup"))
+    assert gate.block_reason(agent, "write_file", "task", {"path": "new.txt"}) is None
+    assert agent._project_backup_state["receipt"] is None
+
+
 def test_failure_is_pinned_and_never_treated_as_success(context, monkeypatch):
     agent, root, home = context
     calls = []

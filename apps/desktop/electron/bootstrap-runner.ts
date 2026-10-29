@@ -463,7 +463,7 @@ function downloadInstallScript(ref, destPath) {
   // ref so local builds can still bootstrap without pretending the all-zero
   // placeholder is a real GitHub commit.
   const scriptName = installScriptName()
-  const url = `https://raw.githubusercontent.com/eimanghazaei/Youtab-Agent-Runtime/${ref}/scripts/${scriptName}`
+  const url = `https://raw.githubusercontent.com/Youtab-AI-OS/agent-offline-online/${ref}/scripts/${scriptName}`
 
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(destPath), { recursive: true })
@@ -550,6 +550,7 @@ async function resolveInstallScript({
   youtabHome,
   emit,
   customerMode = false,
+  bundledResourcesPath = process.resourcesPath,
   _download = downloadInstallScript
 }) {
   if (customerMode) {
@@ -580,6 +581,12 @@ async function resolveInstallScript({
 
   const cached = cachedScriptPath(youtabHome, installRef.cacheKey)
   const resolvedCommit = installRef.pinned ? installRef.ref : null
+
+  const bundled = bundledResourcesPath && path.join(bundledResourcesPath, 'bootstrap', installScriptName())
+  if (bundled && fs.existsSync(bundled)) {
+    emit({ type: 'log', line: `[bootstrap] using bundled ${installScriptName()} at ${bundled}` })
+    return { path: bundled, source: 'bundled', commit: resolvedCommit, kind: installScriptKind() }
+  }
 
   try {
     await fsp.access(cached, fs.constants.R_OK)
