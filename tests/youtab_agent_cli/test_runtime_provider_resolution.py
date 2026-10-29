@@ -1039,14 +1039,18 @@ class TestAzureAnthropicEnvVarHint:
         assert resolved["api_key"] == "fallback-works"
 
 
-    def test_non_azure_anthropic_path_ignores_key_env(self, monkeypatch):
+    @pytest.mark.parametrize("base_url", [
+        "https://api.anthropic.com",
+        "https://example.invalid/azure.com/anthropic",
+    ])
+    def test_non_azure_anthropic_path_ignores_key_env(self, monkeypatch, base_url):
         """key_env is only consulted on Azure endpoints — non-Azure Anthropic
         still goes through the regular resolve_anthropic_token chain."""
         monkeypatch.setenv("MY_KEY", "custom-key-value")
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
         monkeypatch.setattr(rp, "_get_model_config", lambda: {
             "provider": "anthropic",
-            "base_url": "https://api.anthropic.com",  # non-Azure
+            "base_url": base_url,
             "key_env": "MY_KEY",
         })
         monkeypatch.setattr(rp, "load_pool", lambda provider: None)

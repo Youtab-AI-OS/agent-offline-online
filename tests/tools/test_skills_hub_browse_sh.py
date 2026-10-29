@@ -56,6 +56,18 @@ class TestBrowseShSource(unittest.TestCase):
     def test_source_id(self):
         self.assertEqual(self.src.source_id(), "browse-sh")
 
+    @patch("tools.skills_hub._guarded_http_get", return_value=None)
+    def test_raw_github_fallback_checks_the_actual_host(self, _get):
+        self.assertIsNone(self.src._resolve_skill_md_url("sample", {
+            "sourceUrl": "https://raw.githubusercontent.com.evil.example/skill.md",
+        }))
+        self.assertEqual(
+            self.src._resolve_skill_md_url("sample", {
+                "sourceUrl": "https://raw.githubusercontent.com/org/repo/main/SKILL.md",
+            }),
+            "https://raw.githubusercontent.com/org/repo/main/SKILL.md",
+        )
+
     @patch.object(BrowseShSource, "_fetch_catalog", return_value=SAMPLE_CATALOG)
     def test_search_returns_results(self, _mock_catalog):
         results = self.src.search("airbnb", limit=10)

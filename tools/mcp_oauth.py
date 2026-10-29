@@ -1143,10 +1143,14 @@ def _is_figma_remote_mcp(
     """True when this MCP server is Figma's hosted remote endpoint."""
     url = (server_url or "").lower()
     name = (server_name or "").lower()
-    if "mcp.figma.com" in url or "figma.com/mcp" in url:
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if parsed.scheme == "https" and (
+        host == "mcp.figma.com" or
+        ((host == "figma.com" or host.endswith(".figma.com")) and parsed.path.startswith("/mcp"))
+    ):
         return True
-    # Name-only match only when the URL isn't some other host called figma-*.
-    if "figma" in name and (not url or "figma" in url):
+    if "figma" in name and not url:
         return True
     return False
 
