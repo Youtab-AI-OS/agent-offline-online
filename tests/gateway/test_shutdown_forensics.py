@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import stat
 import sys
 import time
 from pathlib import Path
@@ -111,6 +112,7 @@ class TestSpawnAsyncDiagnostic:
             pass
 
         assert log_path.exists()
+        assert stat.S_IMODE(log_path.stat().st_mode) & 0o077 == 0
         contents = log_path.read_text(encoding="utf-8", errors="replace")
         assert "shutdown diagnostic" in contents
         assert "SIGTERM" in contents
