@@ -1034,9 +1034,11 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
 
     @classmethod
     def _drive(cls, gr):
-        asyncio.run(
-            gr.GatewayRunner._launch_detached_restart_command(cls._fake_self())
-        )
+        # Isolate watcher spawns from environment discovery, which also runs git.
+        with mock.patch("tools.environments.local.build_subprocess_env", side_effect=lambda **_: os.environ.copy()):
+            asyncio.run(
+                gr.GatewayRunner._launch_detached_restart_command(cls._fake_self())
+            )
 
     def test_outer_watcher_retries_without_breakaway_on_oserror(self, monkeypatch):
         import gateway.run as gr

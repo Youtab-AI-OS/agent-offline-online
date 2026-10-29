@@ -109,6 +109,7 @@ class TestSpawnAsyncDiagnostic:
         try:
             os.waitpid(pid, 0)
         except (ChildProcessError, OSError):
+            # The child may already have been reaped by the process manager.
             pass
 
         assert log_path.exists()
