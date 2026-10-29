@@ -345,10 +345,7 @@ def is_always_blocked_url(url: str) -> bool:
 
         # Blocked-hostname check fires regardless of DNS resolution
         if hostname in _BLOCKED_HOSTNAMES:
-            logger.warning(
-                "Blocked request to internal hostname (always-blocked floor): %s",
-                hostname,
-            )
+            logger.warning("Blocked request to internal hostname (always-blocked floor)")
             return True
 
         # Literal IP → check directly against the always-blocked set
@@ -361,11 +358,7 @@ def is_always_blocked_url(url: str) -> bool:
             if ip in _ALWAYS_BLOCKED_IPS or any(
                 ip in net for net in _ALWAYS_BLOCKED_NETWORKS
             ):
-                logger.warning(
-                    "Blocked request to cloud metadata address "
-                    "(always-blocked floor): %s",
-                    hostname,
-                )
+                logger.warning("Blocked request to cloud metadata address (always-blocked floor)")
                 return True
             return False
 
@@ -385,25 +378,20 @@ def is_always_blocked_url(url: str) -> bool:
             try:
                 resolved = ipaddress.ip_address(ip_str)
             except ValueError:
-                logger.warning("Unparseable IP address %r for hostname %s — skipping address", sockaddr[0], hostname)
+                logger.warning("Unparseable IP address for hostname — skipping address")
                 continue
             if resolved in _ALWAYS_BLOCKED_IPS or any(
                 resolved in net for net in _ALWAYS_BLOCKED_NETWORKS
             ):
-                logger.warning(
-                    "Blocked request to cloud metadata address "
-                    "(always-blocked floor): %s -> %s",
-                    hostname,
-                    ip_str,
-                )
+                logger.warning("Blocked request to cloud metadata address (always-blocked floor)")
                 return True
 
         return False
 
-    except Exception as exc:
+    except Exception:
         # Parse failures or unexpected errors — don't claim the URL is
         # always-blocked.  Caller decides what to do with a malformed URL.
-        logger.debug("is_always_blocked_url error for %s: %s", url, exc)
+        logger.debug("is_always_blocked_url could not inspect URL")
         return False
 
 
