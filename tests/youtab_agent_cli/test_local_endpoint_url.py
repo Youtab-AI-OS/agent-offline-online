@@ -55,6 +55,19 @@ def test_custom_endpoint_probe_rejects_cloud_metadata_before_http(monkeypatch):
     assert result == {"ok": False, "reachable": False, "message": "This endpoint address is blocked.", "models": []}
 
 
+def test_custom_endpoint_probe_requires_dashboard_session(monkeypatch, _isolate_youtab_home):
+    import httpx
+    from fastapi.testclient import TestClient
+    from youtab_agent_cli import web_server as ws
+
+    monkeypatch.setattr(httpx, "Client", lambda **_kwargs: pytest.fail("unauthorized probe reached HTTP"))
+    response = TestClient(ws.app).post(
+        "/api/providers/custom-endpoints/validate",
+        json={"name": "Synthetic", "base_url": "http://127.0.0.1:12345/v1", "model": ""},
+    )
+    assert response.status_code == 401
+
+
 def test_unsupported_selected_proxy_returns_safe_configuration_error(monkeypatch, _isolate_youtab_home):
     import httpx
     from starlette.testclient import TestClient
