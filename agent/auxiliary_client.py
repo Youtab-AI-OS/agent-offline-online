@@ -1787,11 +1787,7 @@ def _maybe_wrap_anthropic(
         )
         return client_obj
 
-    logger.debug(
-        "Auxiliary transport: wrapping client in AnthropicAuxiliaryClient "
-        "(model=%s, api_mode=%s)",
-        model, api_mode or "auto-detected",
-    )
+    logger.debug("Auxiliary transport: wrapping client in AnthropicAuxiliaryClient")
     return AnthropicAuxiliaryClient(
         real_client, model, api_key, base_url, is_oauth=False,
     )
@@ -5372,10 +5368,7 @@ def resolve_provider_client(
         Clients that are already specialized wrappers pass through unchanged.
         """
         if _needs_codex_wrap(client_obj, base_url_str, final_model_str):
-            logger.debug(
-                "resolve_provider_client: wrapping client in CodexAuxiliaryClient "
-                "(api_mode=%s, model=%s)",
-                api_mode or "auto-detected", final_model_str)
+            logger.debug("resolve_provider_client: wrapping client in CodexAuxiliaryClient")
             return CodexAuxiliaryClient(client_obj, final_model_str)
         # Anthropic-wire endpoints: rewrap plain OpenAI clients so
         # chat.completions.create() is translated to /v1/messages.
@@ -8137,8 +8130,7 @@ def call_llm(
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
     if task:
-        logger.info("Auxiliary %s: using %s (%s)",
-                    task, resolved_provider or "auto", final_model or "default")
+        logger.info("Auxiliary request started")
 
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish
