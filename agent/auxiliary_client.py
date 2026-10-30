@@ -471,7 +471,7 @@ def _fixed_temperature_for_model(
         ``None`` — no override; caller should use its own default.
     """
     if _is_kimi_model(model):
-        logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
+        logger.debug("Omitting temperature for Kimi model (server-managed)")
         return OMIT_TEMPERATURE
     if _is_arcee_trinity_thinking(model):
         return 0.5
@@ -2471,9 +2471,7 @@ def _resolve_moa_aggregator(preset_name: Optional[str]) -> Tuple[Optional[str], 
         if agg_provider and agg_model and agg_provider.lower() != "moa":
             return agg_provider, agg_model
     except Exception:
-        logger.debug(
-            "MoA aggregator resolution failed for preset %r", preset_name, exc_info=True
-        )
+        logger.debug("MoA aggregator resolution failed")
     return None, None
 
 
@@ -3003,7 +3001,7 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     if resolved is None:
         return None, None
     api_key, base_url = resolved
-    logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
+    logger.debug("Auxiliary client: xAI OAuth via Responses API")
     from tools.xai_http import youtab_xai_default_headers
 
     real_client = _create_openai_client(
@@ -3046,7 +3044,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
         if not codex_token:
             return None, None
         base_url = _CODEX_AUX_BASE_URL
-    logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
+    logger.debug("Auxiliary client: Codex OAuth via Responses API")
     real_client = _create_openai_client(
         api_key=codex_token,
         base_url=base_url,
@@ -3133,10 +3131,7 @@ def _try_azure_foundry(
         # No fallback aux model for Azure — the user must have a
         # deployment name. Surface that as "no client" so the auto
         # chain falls through to the next provider rather than 404ing.
-        logger.debug(
-            "Auxiliary azure-foundry: no model resolved (model=%r, default=%r)",
-            model, model_cfg.get("default"),
-        )
+        logger.debug("Auxiliary azure-foundry: no model resolved")
         return None, None
 
     # Azure pre-v1 endpoints sometimes carry api-version query params
@@ -5386,9 +5381,7 @@ def resolve_provider_client(
         # "google/gemini-3-flash-preview" won't work.  Drop it and use
         # the provider's own default model instead.
         if model and "/" in model and resolved and "/" not in resolved:
-            logger.debug(
-                "Dropping OpenRouter-format model %r for non-OpenRouter "
-                "auxiliary provider (using %r instead)", model, resolved)
+            logger.debug("Dropping OpenRouter-format model for non-OpenRouter auxiliary provider")
             model = None
         final_model = model or resolved
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -5815,10 +5808,7 @@ def resolve_provider_client(
             try:
                 from youtab_agent_cli.models import _should_use_copilot_responses_api
                 if _should_use_copilot_responses_api(final_model):
-                    logger.debug(
-                        "resolve_provider_client: copilot model %s needs "
-                        "Responses API — wrapping with CodexAuxiliaryClient",
-                        final_model)
+                    logger.debug("resolve_provider_client: copilot model needs Responses API")
                     client = CodexAuxiliaryClient(client, final_model)
             except ImportError:
                 pass
@@ -5908,7 +5898,7 @@ def resolve_provider_client(
             logger.warning("resolve_provider_client: cannot create Vertex "
                            "client: %s", exc)
             return None, None
-        logger.debug("resolve_provider_client: vertex (%s)", final_model)
+        logger.debug("resolve_provider_client: vertex")
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -5948,12 +5938,10 @@ def resolve_provider_client(
                 real_client, final_model, api_key="aws-sdk",
                 base_url=base_url,
             )
-            logger.debug("resolve_provider_client: bedrock anthropic (%s, %s)",
-                         final_model, region)
+            logger.debug("resolve_provider_client: bedrock anthropic")
         else:
             client = BedrockAuxiliaryClient(region, final_model)
-            logger.debug("resolve_provider_client: bedrock converse (%s, %s)",
-                         final_model, region)
+            logger.debug("resolve_provider_client: bedrock converse")
 
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
@@ -6239,10 +6227,7 @@ def resolve_vision_provider_client(
                     main_provider, vision_model
                 )
                 if sync_client is not None:
-                    logger.info(
-                        "Vision auto-detect: using main provider %s (%s)",
-                        main_provider, default_model or resolved_model or main_model,
-                    )
+                    logger.info("Vision auto-detect: using main provider")
                     return _finalize(main_provider, sync_client, default_model)
             elif main_provider in _PROVIDERS_WITHOUT_VISION:
                 # Kimi Coding Plan's /coding endpoint (Anthropic Messages wire)
@@ -7372,11 +7357,7 @@ def _build_call_kwargs(
         for _t in tools:
             _tname = (_t.get("function") or {}).get("name", "")
             if _tname and _tname in _seen:
-                logger.warning(
-                    "_build_call_kwargs: duplicate tool name '%s' removed "
-                    "(provider=%s model=%s)",
-                    _tname, provider, model,
-                )
+                logger.warning("_build_call_kwargs: duplicate tool name removed")
                 continue
             if _tname:
                 _seen.add(_tname)
@@ -8965,11 +8946,7 @@ async def async_call_llm(
             healed_model = _refresh_youtab_recommended_model(
                 vision=(task == "vision"), stale_model=kwargs.get("model"))
             if healed_model and healed_model != kwargs.get("model"):
-                logger.warning(
-                    "Auxiliary %s (async): model %r no longer in Youtab catalog; "
-                    "retrying with refreshed recommendation %r",
-                    task or "call", kwargs.get("model"), healed_model,
-                )
+                logger.warning("Auxiliary async model no longer in Youtab catalog; retrying")
                 kwargs["model"] = healed_model
                 try:
                     return _validate_llm_response(

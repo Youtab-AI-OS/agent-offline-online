@@ -6507,7 +6507,6 @@ def run_conversation(
                     messages.append(assistant_msg)
 
                     if reasoning_text:
-                        reasoning_preview = reasoning_text[:500] + "..." if len(reasoning_text) > 500 else reasoning_text
                         logger.warning("Reasoning-only response after exhausting retries and fallback")
                         agent._emit_status(
                             "⚠️ Model produced reasoning but no visible "
@@ -6516,10 +6515,8 @@ def run_conversation(
                     else:
                         logger.warning(
                             "Empty response (no content or reasoning) "
-                            "after %d retries. No fallback available. "
-                            "model=%s provider=%s",
-                            agent._empty_content_retries, agent.model,
-                            agent.provider,
+                            "after %d retries. No fallback available.",
+                            agent._empty_content_retries,
                         )
                         agent._emit_status(
                             "❌ Model returned no content after all retries"
