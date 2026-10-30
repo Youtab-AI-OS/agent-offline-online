@@ -1062,14 +1062,12 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
 
     try:
         model, runtime_kwargs = _resolve_model_and_runtime()
-        logger.info("[Feishu-Comment] _run_comment_agent: model=%s provider=%s base_url=%s",
-                    model, runtime_kwargs.get("provider"), (runtime_kwargs.get("base_url") or "")[:50])
+        logger.info("[Feishu-Comment] _run_comment_agent: runtime resolved")
 
         # Load session history for cross-card memory
         history = _load_session_history(session_key) if session_key else []
         if history:
-            logger.info("[Feishu-Comment] _run_comment_agent: loaded %d history messages from session %s",
-                        len(history), session_key)
+            logger.info("[Feishu-Comment] _run_comment_agent: loaded %d history messages", len(history))
 
         agent = AIAgent(
             model=model,
@@ -1089,8 +1087,8 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
         result = agent.run_conversation(prompt, conversation_history=history or None)
         response = (result.get("final_response") or "").strip()
         api_calls = result.get("api_calls", 0)
-        logger.info("[Feishu-Comment] _run_comment_agent: done api_calls=%d response_len=%d response=%s",
-                    api_calls, len(response), response[:200])
+        logger.info("[Feishu-Comment] _run_comment_agent: done api_calls=%d response_len=%d",
+                    api_calls, len(response))
 
         # Save updated history
         if session_key:
@@ -1099,8 +1097,8 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
                 _save_session_history(session_key, new_messages)
 
         return response
-    except Exception as e:
-        logger.exception("[Feishu-Comment] _run_comment_agent: agent failed: %s", e)
+    except Exception:
+        logger.warning("[Feishu-Comment] _run_comment_agent: agent failed")
         return ""
     finally:
         set_doc_client(None)
