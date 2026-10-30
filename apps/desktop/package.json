@@ -199,6 +199,10 @@
     "afterPack": "scripts/after-pack.mjs",
     "extraResources": [
       {
+        "from": "../../scripts/install.sh",
+        "to": "bootstrap/install.sh"
+      },
+      {
         "from": "build/update-coordination",
         "to": "update-coordination",
         "filter": [

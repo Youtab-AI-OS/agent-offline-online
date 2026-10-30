@@ -330,6 +330,14 @@ describe('settings helpers', () => {
   })
 
   describe('sectionFieldEntries', () => {
+    it('shows the optional backup requirement as a Safety switch', () => {
+      const config: YoutabConfigRecord = { project_task_backup: { required: false } }
+      const field = new Map(sectionFieldEntries({}, config).get('safety') ?? []).get('project_task_backup.required')
+
+      expect(field?.type).toBe('boolean')
+      expect(getNested(setNested(config, 'project_task_backup.required', true), 'project_task_backup.required')).toBe(true)
+    })
+
     it('renders memory.provider from config even when the backend schema omits it', () => {
       const schema = { 'memory.memory_enabled': { type: 'boolean' as const } }
       const config: YoutabConfigRecord = { memory: { memory_enabled: true, provider: '' } }

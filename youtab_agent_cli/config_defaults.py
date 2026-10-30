@@ -394,6 +394,7 @@ DEFAULT_CONFIG = {
     #   - max_snapshots: 50 -> 20  (now actually enforced via ref rewrite)
     #   - auto_prune:   False -> True (orphans/stale pruned automatically)
     # Opt in via ``youtab chat --checkpoints`` or set enabled=True here.
+    "project_task_backup": {"required": False},
     "checkpoints": {
         "enabled": False,
         # Max checkpoints to keep per working directory.  Pre-v2 this only

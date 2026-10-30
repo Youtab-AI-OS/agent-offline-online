@@ -74,6 +74,12 @@ class TestEnsureYoutabHome:
 
 
 class TestLoadConfigDefaults:
+    def test_project_backup_requirement_defaults_off_and_can_be_enabled(self, tmp_path):
+        with patch.dict(os.environ, {"YOUTAB_AGENT_HOME": str(tmp_path)}):
+            assert load_config()["project_task_backup"]["required"] is False
+            set_config_value("project_task_backup.required", "true")
+            assert load_config()["project_task_backup"]["required"] is True
+
     def test_returns_defaults_when_no_file(self, tmp_path):
         with patch.dict(os.environ, {"YOUTAB_AGENT_HOME": str(tmp_path)}):
             config = load_config()
