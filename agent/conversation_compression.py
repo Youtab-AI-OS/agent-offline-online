@@ -936,16 +936,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 )
             agent._compression_warning = msg
             agent._emit_status(msg)
-            logger.warning(
-                "Auxiliary compression model %s has %d token context, "
-                "below the main model's compression threshold of %d "
-                "tokens — auto-lowered session threshold to %d to "
-                "keep compression working.",
-                aux_model,
-                aux_context,
-                old_threshold,
-                new_threshold,
-            )
+            logger.warning("Auxiliary compression context below threshold; auto-lowered session threshold")
     except ValueError:
         # Hard rejections (aux below minimum context) must propagate
         # so the session refuses to start.

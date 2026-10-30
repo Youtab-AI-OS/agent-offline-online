@@ -16,6 +16,12 @@ class TestToOpenaiBaseUrl:
     def test_minimax_global_anthropic_suffix_replaced(self):
         assert _to_openai_base_url("https://api.minimax.io/anthropic") == "https://api.minimax.io/v1"
 
+    def test_provider_rewrites_use_hostname_not_url_substring(self):
+        assert _to_openai_base_url("https://open.bigmodel.cn/api/anthropic") == "https://open.bigmodel.cn/api/paas/v4"
+        assert _to_openai_base_url("https://example.invalid/bigmodel/anthropic") == "https://example.invalid/bigmodel/v1"
+        assert _to_openai_base_url("https://api.kimi.com/coding") == "https://api.kimi.com/coding/v1"
+        assert _to_openai_base_url("https://api.kimi.com.evil.example/coding") == "https://api.kimi.com.evil.example/coding"
+
 
 
 

@@ -1246,7 +1246,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         or base_url_host_matches(agent._base_url_lower, "githubcopilot.com")
     )
     _is_youtab = "youtab" in agent._base_url_lower
-    _is_nvidia = "integrate.api.nvidia.com" in agent._base_url_lower
+    _is_nvidia = base_url_host_matches(agent._base_url_lower, "integrate.api.nvidia.com")
     _is_kimi = (
         base_url_host_matches(agent.base_url, "api.kimi.com")
         or base_url_host_matches(agent.base_url, "moonshot.ai")
@@ -1898,11 +1898,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if _existing_pool is not None:
             _pool_provider = (getattr(_existing_pool, "provider", "") or "").strip().lower()
             if _pool_provider and _pool_provider != fb_provider:
-                logger.info(
-                    "Fallback to %s/%s: clearing primary credential pool "
-                    "(pool_provider=%s) to prevent cross-provider contamination",
-                    fb_provider, fb_model, _pool_provider,
-                )
+                logger.info("Fallback: clearing primary credential pool to prevent cross-provider contamination")
                 agent._credential_pool = None
                 agent._credential_pool_entry_id = None
         if getattr(agent, "_credential_pool", None) is None:

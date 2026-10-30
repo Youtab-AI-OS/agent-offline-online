@@ -36,7 +36,47 @@ from agent.auxiliary_client import (
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
     _pool_runtime_base_url,
+    _maybe_wrap_anthropic,
+    _read_youtab_auth,
 )
+
+
+def test_anthropic_client_failure_does_not_log_endpoint_credentials(monkeypatch, caplog):
+    import agent.anthropic_adapter as adapter
+
+    secret = "synthetic-token-for-log-test"
+
+    def fail_build(*_args, **_kwargs):
+        raise RuntimeError(f"remote error included {secret}")
+
+    monkeypatch.setattr(adapter, "build_anthropic_client", fail_build)
+    client = object()
+    with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+        result = _maybe_wrap_anthropic(
+            client, "model", "synthetic-api-key",
+            f"https://user:{secret}@example.invalid/v1?api_key={secret}",
+            api_mode="anthropic_messages",
+        )
+    assert result is client
+    assert "Failed to build Anthropic client" in caplog.text
+    assert secret not in caplog.text
+
+
+def test_auth_store_read_failure_does_not_log_exception_payload(monkeypatch, caplog):
+    secret = "synthetic-token-for-log-test"
+
+    def fail_read(**_kwargs):
+        raise OSError(f"failed while reading {secret}")
+
+    monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", lambda _provider: (False, None))
+    monkeypatch.setattr(
+        "agent.auxiliary_client._AUTH_JSON_PATH",
+        SimpleNamespace(is_file=lambda: True, read_text=fail_read),
+    )
+    with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
+        assert _read_youtab_auth() is None
+    assert "Could not read Youtab auth" in caplog.text
+    assert secret not in caplog.text
 
 
 def _jwt_with_claims(claims: dict) -> str:

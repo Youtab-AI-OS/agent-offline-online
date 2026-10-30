@@ -1,5 +1,6 @@
 """Tests for SSRF protection in url_safety module."""
 
+import logging
 import socket
 from unittest.mock import patch
 
@@ -60,6 +61,13 @@ class TestNormalizeUrlForRequest:
 
 
 class TestIsSafeUrl:
+    def test_blocked_url_is_not_written_to_logs(self, caplog):
+        url = "https://private.example/path?token=synthetic-secret"
+        with _resolves_to("127.0.0.1"), caplog.at_level(logging.WARNING, logger="tools.url_safety"):
+            assert is_safe_url(url) is False
+        assert "private.example" not in caplog.text
+        assert "synthetic-secret" not in caplog.text
+
     def test_public_url_allowed(self):
         with _resolves_to("93.184.216.34"):
             assert is_safe_url("https://example.com/image.png") is True
@@ -185,6 +193,17 @@ class TestSSRFGuardedHttpxClient:
             with pytest.raises(SSRFConnectionBlocked, match="metadata"):
                 _resolved_http_connect_ips("example.com", 80, "http")
 
+    def test_explicit_local_endpoint_still_blocks_metadata(self):
+        with _resolves_to("127.0.0.1"):
+            assert _resolved_http_connect_ips(
+                "localhost", 16731, "http", allow_private_ips=True
+            ) == ["127.0.0.1"]
+        with _resolves_to("169.254.169.254"):
+            with pytest.raises(SSRFConnectionBlocked, match="metadata"):
+                _resolved_http_connect_ips(
+                    "localhost", 16731, "http", allow_private_ips=True
+                )
+
 
     @pytest.mark.asyncio
     async def test_async_backend_blocks_unix_socket_connects(self):
@@ -279,19 +298,21 @@ class TestGlobalAllowPrivateUrls:
         yield
         _reset_allow_private_cache()
 
-    def test_default_is_false(self, monkeypatch):
+    def test_default_is_false(self, monkeypatch, tmp_path):
         """Toggle defaults to False when no env var or config is set."""
         monkeypatch.delenv("YOUTAB_AGENT_ALLOW_PRIVATE_URLS", raising=False)
-        with patch("youtab_agent_cli.config.read_raw_config", side_effect=Exception("no config")):
-            assert _global_allow_private_urls() is False
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
+        assert _global_allow_private_urls() is False
 
 
-    def test_config_security_string_false_stays_disabled(self, monkeypatch):
+    def test_config_security_string_false_stays_disabled(self, monkeypatch, tmp_path):
         """Quoted false must not opt out of SSRF protection."""
         monkeypatch.delenv("YOUTAB_AGENT_ALLOW_PRIVATE_URLS", raising=False)
-        cfg = {"security": {"allow_private_urls": "false"}}
-        with patch("youtab_agent_cli.config.read_raw_config", return_value=cfg):
-            assert _global_allow_private_urls() is False
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            'security:\n  allow_private_urls: "false"\n', encoding="utf-8"
+        )
+        assert _global_allow_private_urls() is False
 
 
     @pytest.mark.parametrize(

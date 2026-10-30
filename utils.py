@@ -1,6 +1,8 @@
 """Shared utility functions for youtab-agent-runtime."""
 
 import errno
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -18,6 +20,14 @@ logger = logging.getLogger(__name__)
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+_CACHE_FINGERPRINT_KEY = os.urandom(32)
+
+
+def credential_cache_digest(value: str, *, purpose: bytes) -> bytes:
+    """Return a process-local, purpose-separated credential cache fingerprint."""
+    return hmac.digest(
+        _CACHE_FINGERPRINT_KEY, purpose + b"\0" + value.encode("utf-8"), hashlib.sha256
+    )
 
 
 def is_truthy_value(value: Any, default: bool = False) -> bool:

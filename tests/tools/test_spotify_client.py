@@ -73,6 +73,14 @@ def test_normalize_spotify_uri_accepts_urls() -> None:
     assert uri == "spotify:track:7ouMYWpwJ422jRcDASZB7P"
 
 
+def test_normalize_spotify_uri_rejects_forged_host() -> None:
+    with pytest.raises(spotify_mod.SpotifyError):
+        spotify_mod.normalize_spotify_uri(
+            "https://evil.example/open.spotify.com/track/7ouMYWpwJ422jRcDASZB7P",
+            "track",
+        )
+
+
 def test_get_currently_playing_returns_explanatory_empty_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         spotify_mod,

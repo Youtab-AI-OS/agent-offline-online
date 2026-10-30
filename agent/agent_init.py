@@ -1001,7 +1001,7 @@ def init_agent(
             agent.client = None
             agent._client_kwargs = {}
             if not agent.quiet_mode:
-                print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
+                print("🤖 AI Agent initialized (AWS Bedrock + AnthropicBedrock SDK)")
         else:
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
@@ -1061,7 +1061,7 @@ def init_agent(
                 if is_token_provider(effective_key):
                     print("🔑 Using credentials: Microsoft Entra ID")
                 elif isinstance(effective_key, str) and len(effective_key) > 12:
-                    print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+                    print("🔑 Using token: configured")
     elif agent.provider == "moa":
         from agent.moa_loop import build_moa_facade
         agent.api_mode = "chat_completions"
@@ -1107,7 +1107,7 @@ def init_agent(
         agent._client_kwargs = {}
         if not agent.quiet_mode:
             _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
-            print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
+            print(f"🤖 AI Agent initialized (AWS Bedrock{_gr_label})")
     else:
         if api_key and base_url:
             # Explicit credentials from CLI/gateway — construct directly.
@@ -1330,7 +1330,7 @@ def init_agent(
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {agent.model}")
                 if base_url:
-                    print(f"🔗 Using custom base URL: {base_url}")
+                    print("🔗 Using custom base URL")
                 # ``api_key`` may be a callable Entra ID bearer
                 # provider (Azure Foundry). The OpenAI SDK mints a
                 # fresh JWT per request internally — the banner
@@ -1341,7 +1341,7 @@ def init_agent(
                 if is_token_provider(key_used):
                     print("🔑 Using credentials: Microsoft Entra ID")
                 elif isinstance(key_used, str) and key_used and key_used != "dummy-key" and len(key_used) > 12:
-                    print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
+                    print("🔑 Using API key: configured")
                 else:
                     print("⚠️  Warning: API key appears invalid or missing")
         except Exception as e:
@@ -1476,9 +1476,11 @@ def init_agent(
     # is canonical — the snapshot is only useful for external tooling that
     # reads the JSON files directly.  See run_agent._save_session_log.
     agent._session_json_enabled = False
+    _init_cfg: Dict[str, Any] = {}
     try:
         from youtab_agent_cli.config import load_config_readonly as _load_sess_cfg
-        _sess_cfg = (_load_sess_cfg().get("sessions") or {})
+        _init_cfg = _load_sess_cfg()
+        _sess_cfg = (_init_cfg.get("sessions") or {})
         agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
     except Exception:
         pass
@@ -1503,8 +1505,9 @@ def init_agent(
     # from the persisted string and is used only to place an early cache marker.
     agent._cached_system_prompt_static: Optional[str] = None
     
-    from youtab_agent_cli.config import load_config
-    agent._project_backup_required = load_config().get("project_task_backup", {}).get("required") is True
+    agent._project_backup_required = cfg_get(
+        _init_cfg, "project_task_backup", "required", default=False
+    ) is True
 
     # Filesystem checkpoint manager (transparent — not a tool)
     from tools.checkpoint_manager import CheckpointManager

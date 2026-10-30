@@ -1659,7 +1659,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Youtab home directory (respects YOUTAB_AGENT_HOME override)
 from youtab_constants import get_youtab_home, get_youtab_home_override
-from utils import atomic_json_write, is_truthy_value
+from utils import atomic_json_write, credential_cache_digest, is_truthy_value
 _youtab_home = get_youtab_home()
 
 # Load environment variables from ~/.youtab-agent-runtime/.env first.
@@ -4118,10 +4118,7 @@ class TurnRunner:
                 session_key=ctx.session_key,
                 user_config=ctx.user_config,
             )
-            logger.debug(
-                "run_agent resolved: model=%s provider=%s session=%s",
-                model, runtime_kwargs.get("provider"), ctx.session_key or "",
-            )
+            logger.debug("run_agent resolved session runtime")
         except Exception as exc:
             return {
                 "final_response": f"⚠️ Provider authentication failed: {exc}",
@@ -6686,10 +6683,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from youtab_agent_cli.models import get_default_model_for_provider
                 model = get_default_model_for_provider(runtime_kwargs["provider"])
                 if model:
-                    logger.info(
-                        "No model configured — defaulting to %s for provider %s",
-                        model, runtime_kwargs["provider"],
-                    )
+                    logger.info("No model configured — using provider default")
             except Exception:
                 pass
 
@@ -21548,9 +21542,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Fingerprint the FULL credential string instead of using a short
         # prefix. OAuth/JWT-style tokens frequently share a common prefix
         # (e.g. "eyJhbGci"), which can cause false cache hits across auth
-        # switches if only the first few characters are considered.
+        # switches if only the first few characters are considered. The
+        # process-local HMAC key keeps cache signatures resistant to offline
+        # guessing if a cache key is exposed.
         _api_key = str(runtime.get("api_key", "") or "")
-        _api_key_fingerprint = hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else ""
+        _api_key_fingerprint = (
+            credential_cache_digest(_api_key, purpose=b"gateway-agent").hex()
+            if _api_key else ""
+        )
 
         _cache_keys_sorted = sorted((cache_keys or {}).items())
 

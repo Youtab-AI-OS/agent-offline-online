@@ -849,7 +849,7 @@ class SessionSearchMixin:
         # Quoting preserves phrase semantics.  A single pass avoids the
         # double-quoting bug that would occur if dotted, hyphenated and underscored
         # patterns were applied sequentially (e.g. ``my-app.config``).
-        sanitized = re.sub(r"\b(\w+(?:[._-]\w+)+)\b", r'"\1"', sanitized)
+        sanitized = re.sub(r"\b(\w++(?:[._-]\w++)+)\b", r'"\1"', sanitized)
 
         # Step 6: Restore preserved quoted phrases
         for i, quoted in enumerate(_quoted_parts):

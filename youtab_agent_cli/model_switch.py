@@ -2586,8 +2586,8 @@ def list_authenticated_providers(
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
             if not models_list:
-                url_lower = str(api_url).strip().lower()
-                if "api.openai.com" in url_lower:
+                from utils import base_url_host_matches
+                if base_url_host_matches(str(api_url), "api.openai.com"):
                     fb = curated.get("openai") or []
                     if fb:
                         models_list = list(fb)

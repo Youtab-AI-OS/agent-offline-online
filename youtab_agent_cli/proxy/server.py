@@ -112,7 +112,8 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         rel_path = request.match_info.get("tail", "")
         rel_path = "/" + rel_path.lstrip("/")
 
-        if rel_path not in adapter.allowed_paths:
+        allowed_path = next((path for path in adapter.allowed_paths if path == rel_path), None)
+        if allowed_path is None:
             allowed = ", ".join(sorted(adapter.allowed_paths))
             return _json_error(
                 404,
@@ -136,7 +137,7 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=300)
 
         async def _send_upstream(active_cred: UpstreamCredential):
-            upstream_url = f"{active_cred.base_url.rstrip('/')}{rel_path}"
+            upstream_url = f"{active_cred.base_url.rstrip('/')}{allowed_path}"
             # Preserve query string verbatim.
             if request.query_string:
                 upstream_url = f"{upstream_url}?{request.query_string}"

@@ -413,8 +413,8 @@ class TestBlueBubblesAttachmentDownload:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "guid", ["a" * 1_048_576, None, {}, ""],
-        ids=["oversized", "null", "object", "empty"],
+        "guid", ["a" * 1_048_576, None, {}, "", "../admin", "x?url=internal", "x%2Fy"],
+        ids=["oversized", "null", "object", "empty", "path", "query", "encoded-path"],
     )
     async def test_invalid_guid_is_rejected_before_http_or_logging_value(
         self, monkeypatch, caplog, guid
@@ -441,6 +441,7 @@ class TestBlueBubblesAttachmentDownload:
                 pass
 
         async def mock_get(*args, **kwargs):
+            assert kwargs["follow_redirects"] is False
             return MockResponse()
 
         adapter.client = type("MockClient", (), {"get": mock_get})()

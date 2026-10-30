@@ -838,6 +838,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             not isinstance(att_guid, str)
             or not att_guid
             or len(att_guid) > _ATTACHMENT_GUID_MAX_CHARS
+            or re.fullmatch(r"[A-Za-z0-9_-]+", att_guid) is None
         ):
             logger.warning("[bluebubbles] ignored invalid attachment GUID")
             return None
@@ -848,7 +849,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             resp = await self.client.get(
                 self._api_url(f"/api/v1/attachment/{encoded}/download"),
                 timeout=60,
-                follow_redirects=True,
+                follow_redirects=False,
             )
             resp.raise_for_status()
             data = resp.content

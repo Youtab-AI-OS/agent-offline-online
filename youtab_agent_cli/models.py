@@ -2894,11 +2894,11 @@ def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> O
 
 
 def _is_github_models_base_url(base_url: Optional[str]) -> bool:
-    normalized = (base_url or "").strip().rstrip("/").lower()
-    return (
-        normalized.startswith(COPILOT_BASE_URL)
-        or normalized.startswith("https://models.github.ai/inference")
-        or normalized.startswith("https://models.inference.ai.azure.com")
+    parsed = urllib.parse.urlsplit((base_url or "").strip())
+    return parsed.scheme == "https" and (
+        parsed.hostname in {"api.githubcopilot.com", "models.inference.ai.azure.com"}
+        or (parsed.hostname == "models.github.ai" and
+            (parsed.path == "/inference" or parsed.path.startswith("/inference/")))
     )
 
 
@@ -2957,13 +2957,13 @@ def _lmstudio_fetch_raw_models(
             ) from exc
         import logging
         logging.getLogger(__name__).debug(
-            "LM Studio probe at %s failed with HTTP %s", server_root, exc.code,
+            "LM Studio probe failed with HTTP %s", exc.code,
         )
         return None
-    except Exception as exc:
+    except Exception:
         import logging
         logging.getLogger(__name__).debug(
-            "LM Studio probe at %s failed: %s", server_root, exc,
+            "LM Studio probe failed",
         )
         return None
 
@@ -2971,8 +2971,7 @@ def _lmstudio_fetch_raw_models(
     if not isinstance(raw_models, list):
         import logging
         logging.getLogger(__name__).debug(
-            "LM Studio probe at %s returned malformed payload (no `models` list)",
-            server_root,
+            "LM Studio probe returned malformed payload (no `models` list)",
         )
         return None
     return raw_models

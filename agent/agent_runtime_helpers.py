@@ -39,7 +39,7 @@ from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
 from agent.turn_context import drop_stale_api_content
-from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
+from utils import base_url_host_matches, base_url_hostname, atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -462,16 +462,7 @@ def note_turn_start(agent, turn_id: str):
         # pop the slot the turn actually holds, not the rotated id.
         agent._inflight_turn_session_id = session_id
         if entry and entry[0] not in (turn_id, prev):
-            logger.warning(
-                "turn %s starting while turn %s (started %.0fs ago) is still "
-                "in flight on session %s under a different agent object — "
-                "two routing keys are mapped to one session_id; concurrent "
-                "turns on one session; transcript writes may interleave",
-                turn_id,
-                entry[0],
-                now - entry[1] if entry[1] else -1.0,
-                session_id,
-            )
+            logger.warning("Concurrent turns on one session; transcript writes may interleave")
             overlap = overlap or entry[0]
     return overlap
 
@@ -1546,12 +1537,8 @@ def restore_primary_runtime(agent) -> bool:
                 from agent.credential_pool import load_pool
 
                 agent._credential_pool = load_pool(primary_provider)
-            except Exception as exc:
-                logger.warning(
-                    "Restore could not reload primary credential pool for %s: %s",
-                    primary_provider,
-                    exc,
-                )
+            except Exception:
+                logger.warning("Restore could not reload primary credential pool")
 
         # The snapshot's api_key was captured at construction time.  Across
         # turns the pool may have rotated (token revocation, billing/rate-limit
@@ -1601,19 +1588,9 @@ def restore_primary_runtime(agent) -> bool:
                     # reapplies base-url-scoped headers, and carries the
                     # accumulated base_url / OAuth-detection fixes (#33163).
                     agent._swap_credential(entry)
-                    logger.info(
-                        "Restore re-selected pool entry %s (%s)",
-                        getattr(entry, "id", "?"),
-                        getattr(entry, "label", "?"),
-                    )
+                    logger.info("Restore re-selected pool entry")
                 elif entry_key:
-                    logger.info(
-                        "Restore skipped pool entry %s (%s): provider %s does not match primary provider %s",
-                        getattr(entry, "id", "?"),
-                        getattr(entry, "label", "?"),
-                        entry_provider or "?",
-                        primary_provider or "?",
-                    )
+                    logger.info("Restore skipped pool entry: provider mismatch")
 
         # ── Restore reasoning_config if it was saved ──
         # switch_model saves reasoning_config in _primary_runtime. If the
@@ -1637,13 +1614,10 @@ def restore_primary_runtime(agent) -> bool:
         from agent.chat_completion_helpers import rewrite_prompt_model_identity
         rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
 
-        logger.info(
-            "Primary runtime restored for new turn: %s (%s)",
-            agent.model, agent.provider,
-        )
+        logger.info("Primary runtime restored for new turn")
         return True
-    except Exception as e:
-        logger.warning("Failed to restore primary runtime: %s", e)
+    except Exception:
+        logger.warning("Failed to restore primary runtime")
         return False
 
 # Which error types indicate a transient transport failure worth
@@ -1823,13 +1797,10 @@ def dump_api_request_debug(
 
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
 
-        if env_var_enabled("YOUTAB_AGENT_DUMP_REQUEST_STDOUT"):
-            print(json.dumps(_redacted_payload, ensure_ascii=False, indent=2, default=str))
-
         return dump_file
-    except Exception as dump_error:
+    except Exception:
         if agent.verbose_logging:
-            logger.warning(f"Failed to dump API request debug payload: {dump_error}")
+            logger.warning("Failed to dump API request debug payload")
         return None
 
 

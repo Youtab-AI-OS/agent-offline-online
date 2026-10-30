@@ -69,6 +69,35 @@ class TestSignature:
         assert not verify_line_signature(b"x", "AAAA", "")
 
 
+@pytest.mark.parametrize("message_id", ["../models", "abc/def", "id?redirect=1", "id#fragment", ""])
+def test_content_message_id_cannot_change_request_target(message_id):
+    with pytest.raises(ValueError, match="Invalid LINE message ID"):
+        asyncio.run(_line._LineClient("synthetic-token").fetch_content(message_id))
+
+
+def test_content_redirect_does_not_forward_bearer(monkeypatch):
+    import aiohttp
+
+    class Context:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        status = 302
+
+        def get(self, url, *, headers, allow_redirects):
+            assert url.endswith("/safe-id/content")
+            assert headers == {"Authorization": "Bearer synthetic-token"}
+            assert allow_redirects is False
+            return self
+
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: Context())
+    with pytest.raises(RuntimeError, match="redirect rejected"):
+        asyncio.run(_line._LineClient("synthetic-token").fetch_content("safe-id"))
+
+
 # ---------------------------------------------------------------------------
 # 2. Chat-id / source resolution
 # ---------------------------------------------------------------------------

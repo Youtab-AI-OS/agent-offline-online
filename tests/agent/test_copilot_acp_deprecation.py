@@ -75,3 +75,5 @@ class TestGitHubModelsAzureUrl:
         from youtab_agent_cli.models import _is_github_models_base_url
 
         assert _is_github_models_base_url("https://models.github.ai/inference")
+        assert not _is_github_models_base_url("https://models.github.ai.evil.example/inference")
+        assert not _is_github_models_base_url("https://models.github.ai/inference-evil")

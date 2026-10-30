@@ -166,23 +166,23 @@ class TestHandleVisionAnalyze:
 
 
 # ---------------------------------------------------------------------------
-# Error logging with exc_info — verify tracebacks are logged
+# Error logging must not expose source paths or provider messages
 # ---------------------------------------------------------------------------
 
 
-class TestErrorLoggingExcInfo:
-    """Verify that exc_info=True is used in error/warning log calls."""
+class TestErrorLoggingPrivacy:
+    """Verify that media errors do not write raw exception text to logs."""
 
     @pytest.mark.asyncio
-    async def test_download_failure_logs_exc_info(self, tmp_path, caplog):
-        """After max retries, the download error should include exc_info."""
+    async def test_download_failure_omits_exception_text(self, tmp_path, caplog):
+        """After max retries, the download error omits exception details."""
         from tools.vision_tools import _download_image
 
         with patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.get = AsyncMock(side_effect=ConnectionError("network down"))
+            mock_client.get = AsyncMock(side_effect=ConnectionError("secret network path"))
             mock_client_cls.return_value = mock_client
 
             dest = tmp_path / "image.jpg"
@@ -194,14 +194,14 @@ class TestErrorLoggingExcInfo:
                     "https://example.com/img.jpg", dest, max_retries=1
                 )
 
-            # Should have logged with exc_info (traceback present)
             error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
             assert len(error_records) >= 1
-            assert error_records[0].exc_info is not None
+            assert error_records[0].exc_info is None
+            assert "secret network path" not in caplog.text
 
     @pytest.mark.asyncio
-    async def test_cleanup_error_logs_exc_info(self, tmp_path, caplog):
-        """Temp file cleanup failure should log warning with exc_info."""
+    async def test_cleanup_error_omits_exception_text(self, tmp_path, caplog):
+        """Temp file cleanup failure should not log file paths."""
         # A data: URL resolves to bytes without any network, materializes to a
         # vision temp file, then the analysis runs — exercising the temp-cleanup
         # path in the finally block. A tiny valid JPEG (magic bytes) passes the
@@ -226,7 +226,7 @@ class TestErrorLoggingExcInfo:
             ):
                 # Make unlink fail to trigger the cleanup warning.
                 def failing_unlink(self, *args, **kwargs):
-                    raise PermissionError("no permission")
+                    raise PermissionError("secret image path")
 
                 with patch.object(Path, "unlink", failing_unlink):
                     await vision_analyze_tool(data_url, "describe", "test/model")
@@ -235,10 +235,11 @@ class TestErrorLoggingExcInfo:
                 r
                 for r in caplog.records
                 if r.levelno == logging.WARNING
-                and "temporary file" in r.getMessage().lower()
+                and "temporary image file" in r.getMessage().lower()
             ]
             assert len(warning_records) >= 1
-            assert warning_records[0].exc_info is not None
+            assert warning_records[0].exc_info is None
+            assert "secret image path" not in caplog.text
 
 
 class TestVisionConfig:
@@ -284,6 +285,24 @@ class TestVisionConfig:
 
 
 class TestVisionSafetyGuards:
+    @pytest.mark.asyncio
+    async def test_vision_diagnostics_omit_user_content(self, caplog):
+        secret = "private-vision-value"
+        with (
+            patch("tools.image_source.resolve_image_source", new_callable=AsyncMock,
+                  side_effect=ValueError(secret)),
+            patch("tools.vision_tools._debug.log_call") as log_call,
+            patch("tools.vision_tools._debug.save"),
+            caplog.at_level(logging.INFO, logger="tools.vision_tools"),
+        ):
+            result = await vision_analyze_tool(
+                f"https://example.test/image?token={secret}", secret, secret,
+            )
+
+        assert secret not in result
+        assert secret not in caplog.text
+        assert secret not in repr(log_call.call_args)
+
     @pytest.mark.asyncio
     async def test_local_non_image_file_rejected_before_llm_call(self, tmp_path):
         secret = tmp_path / "secret.txt"
@@ -346,7 +365,7 @@ class TestVisionSafetyGuards:
             result = json.loads(await vision_analyze_tool("https://blocked.test/cat.png", "describe"))
 
         assert result["success"] is False
-        assert "Blocked by website policy" in result["error"]
+        assert "blocked by website policy" in result["error"].lower()
         mock_download.assert_not_awaited()
 
     @pytest.mark.asyncio

@@ -823,6 +823,16 @@ def test_figma_provider_defaults_set_allowlisted_client_name():
     assert cfg["scope"] == _FIGMA_DEFAULT_SCOPE
 
 
+def test_figma_defaults_ignore_hostname_substring_on_other_server():
+    from tools.mcp_oauth import apply_oauth_provider_defaults
+
+    cfg = apply_oauth_provider_defaults(
+        {}, server_name="figma", server_url="https://mcp.figma.com.evil.example/mcp"
+    )
+    assert "client_name" not in cfg
+    assert "scope" not in cfg
+
+
 def test_humanize_non_registration_403_passthrough():
     from tools.mcp_oauth import humanize_oauth_registration_error
 

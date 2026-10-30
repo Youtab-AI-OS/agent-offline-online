@@ -12,8 +12,8 @@ import { fileURLToPath } from 'node:url'
 // downloaded or requested from a customer during Youtab Setup.
 if (process.platform === 'win32') {
   const source = 'https://go.microsoft.com/fwlink/?linkid=2124701'
-  const sha256 = '1c401b327fbc7bb9731b4e350a2194f083cbc3ede46508d52e1cae6610a39bea'
-  const size = 214884560
+  const sha256 = 'f9d45cf7bef9576d6df50c7a7525e0bc8c26b6c3bc2c667b494aafb062a35b6f'
+  const size = 214999248
   const thumbprint = '4028CAD637509D4744B17EC5B42AED8D7A31E6AF'
   const deadline = AbortSignal.timeout(15 * 60 * 1000)
   const target = fileURLToPath(new URL('../src-tauri/assets/MicrosoftEdgeWebView2RuntimeInstallerX64.exe', import.meta.url))

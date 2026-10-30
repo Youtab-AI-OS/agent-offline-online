@@ -34,8 +34,8 @@ import re
 from typing import Any, Optional
 from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
 
-from youtab_constants import get_youtab_home_override
-from utils import is_truthy_value
+from youtab_constants import get_youtab_home, get_youtab_home_override
+from utils import fast_safe_load, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -258,8 +258,8 @@ def _resolve_allow_private_urls() -> bool:
 
     # 2. Config file
     try:
-        from youtab_agent_cli.config import read_raw_config
-        cfg = read_raw_config()
+        with (get_youtab_home() / "config.yaml").open(encoding="utf-8") as stream:
+            cfg = fast_safe_load(stream) or {}
         # security.allow_private_urls (preferred)
         sec = cfg.get("security", {})
         if isinstance(sec, dict) and is_truthy_value(
@@ -345,10 +345,7 @@ def is_always_blocked_url(url: str) -> bool:
 
         # Blocked-hostname check fires regardless of DNS resolution
         if hostname in _BLOCKED_HOSTNAMES:
-            logger.warning(
-                "Blocked request to internal hostname (always-blocked floor): %s",
-                hostname,
-            )
+            logger.warning("Blocked request to internal hostname (always-blocked floor)")
             return True
 
         # Literal IP → check directly against the always-blocked set
@@ -361,11 +358,7 @@ def is_always_blocked_url(url: str) -> bool:
             if ip in _ALWAYS_BLOCKED_IPS or any(
                 ip in net for net in _ALWAYS_BLOCKED_NETWORKS
             ):
-                logger.warning(
-                    "Blocked request to cloud metadata address "
-                    "(always-blocked floor): %s",
-                    hostname,
-                )
+                logger.warning("Blocked request to cloud metadata address (always-blocked floor)")
                 return True
             return False
 
@@ -385,25 +378,20 @@ def is_always_blocked_url(url: str) -> bool:
             try:
                 resolved = ipaddress.ip_address(ip_str)
             except ValueError:
-                logger.warning("Unparseable IP address %r for hostname %s — skipping address", sockaddr[0], hostname)
+                logger.warning("Unparseable IP address for hostname — skipping address")
                 continue
             if resolved in _ALWAYS_BLOCKED_IPS or any(
                 resolved in net for net in _ALWAYS_BLOCKED_NETWORKS
             ):
-                logger.warning(
-                    "Blocked request to cloud metadata address "
-                    "(always-blocked floor): %s -> %s",
-                    hostname,
-                    ip_str,
-                )
+                logger.warning("Blocked request to cloud metadata address (always-blocked floor)")
                 return True
 
         return False
 
-    except Exception as exc:
+    except Exception:
         # Parse failures or unexpected errors — don't claim the URL is
         # always-blocked.  Caller decides what to do with a malformed URL.
-        logger.debug("is_always_blocked_url error for %s: %s", url, exc)
+        logger.debug("is_always_blocked_url could not inspect URL")
         return False
 
 
@@ -428,14 +416,14 @@ def is_safe_url(url: str) -> bool:
         hostname = (parsed.hostname or "").strip().lower().rstrip(".")
         scheme = (parsed.scheme or "").strip().lower()
         if scheme not in {"http", "https"}:
-            logger.warning("Blocked request — unsupported URL scheme: %s", scheme or "<empty>")
+            logger.warning("Blocked request — unsupported URL scheme")
             return False
         if not hostname:
             return False
 
         # Block known internal hostnames — ALWAYS, even with toggle on
         if hostname in _BLOCKED_HOSTNAMES:
-            logger.warning("Blocked request to internal hostname: %s", hostname)
+            logger.warning("Blocked request to internal hostname")
             return False
 
         # Check the global toggle AFTER blocking metadata hostnames
@@ -464,13 +452,9 @@ def is_safe_url(url: str) -> bool:
             except ValueError:
                 _is_literal_ip = False
             if not _is_literal_ip and _proxy_is_configured():
-                logger.debug(
-                    "DNS resolution failed for %s — proxy configured, "
-                    "allowing through for proxy-side resolution",
-                    hostname,
-                )
+                logger.debug("DNS resolution failed — delegating to configured proxy")
                 return True
-            logger.warning("Blocked request — DNS resolution failed for: %s", hostname)
+            logger.warning("Blocked request — DNS resolution failed")
             return False
 
         for family, _, _, _, sockaddr in addr_info:
@@ -481,41 +465,29 @@ def is_safe_url(url: str) -> bool:
                 ip = ipaddress.ip_address(ip_str)
             except ValueError:
                 # Still unparseable after scope ID strip — fail closed
-                logger.warning("Blocked request — unparseable IP address %r for hostname %s", sockaddr[0], hostname)
+                logger.warning("Blocked request — unparseable IP address")
                 return False
 
             # Always block cloud metadata IPs and link-local, even with toggle on
             if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):
-                logger.warning(
-                    "Blocked request to cloud metadata address: %s -> %s",
-                    hostname, ip_str,
-                )
+                logger.warning("Blocked request to cloud metadata address")
                 return False
 
             if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
-                logger.warning(
-                    "Blocked request to private/internal address: %s -> %s",
-                    hostname, ip_str,
-                )
+                logger.warning("Blocked request to private/internal address")
                 return False
 
         if allow_all_private:
-            logger.debug(
-                "Allowing private/internal resolution (security.allow_private_urls=true): %s",
-                hostname,
-            )
+            logger.debug("Allowing private/internal resolution by configuration")
         elif allow_private_ip:
-            logger.debug(
-                "Allowing trusted hostname despite private/internal resolution: %s",
-                hostname,
-            )
+            logger.debug("Allowing trusted hostname despite private/internal resolution")
 
         return True
 
-    except Exception as exc:
+    except Exception:
         # Fail closed on unexpected errors — don't let parsing edge cases
         # become SSRF bypass vectors
-        logger.warning("Blocked request — URL safety check error for %s: %s", url, exc)
+        logger.warning("Blocked request — URL safety check error")
         return False
 
 
@@ -536,7 +508,9 @@ def _safe_connect_scheme(host: str, port: int, schemes_by_origin: dict[tuple[str
     return schemes_by_origin.get((host, port)) or ("https" if port == 443 else "http")
 
 
-def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
+def _resolved_http_connect_ips(
+    host: str, port: int, scheme: str, *, allow_private_ips: bool = False
+) -> list[str]:
     """Resolve and validate *host* for one HTTP connect attempt.
 
     Unlike :func:`is_safe_url`, this is called from the HTTP transport at the
@@ -581,7 +555,7 @@ def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
                 f"Blocked request to cloud metadata address during connect: {hostname} -> {ip_str}"
             )
 
-        if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
+        if not allow_private_ips and not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
             raise SSRFConnectionBlocked(
                 f"Blocked request to private/internal address during connect: {hostname} -> {ip_str}"
             )
@@ -646,11 +620,12 @@ class _SSRFGuardedAsyncNetworkBackend:
 
 
 class _SSRFGuardedNetworkBackend:
-    def __init__(self, schemes_by_origin_var: Any):
+    def __init__(self, schemes_by_origin_var: Any, *, allow_private_ips: bool = False):
         from httpcore._backends.sync import SyncBackend
 
         self._backend = SyncBackend()
         self._schemes_by_origin_var = schemes_by_origin_var
+        self._allow_private_ips = allow_private_ips
 
     def connect_tcp(
         self,
@@ -664,7 +639,9 @@ class _SSRFGuardedNetworkBackend:
 
         schemes_by_origin = self._schemes_by_origin_var.get({})
         scheme = _safe_connect_scheme(host, port, schemes_by_origin)
-        ips = _resolved_http_connect_ips(host, port, scheme)
+        ips = _resolved_http_connect_ips(
+            host, port, scheme, allow_private_ips=self._allow_private_ips
+        )
 
         last_exc: Exception | None = None
         for ip in ips:
@@ -728,7 +705,7 @@ def ssrf_safe_async_http_transport(**kwargs: Any) -> Any:
     return _Transport(**kwargs)
 
 
-def ssrf_safe_http_transport(**kwargs: Any) -> Any:
+def ssrf_safe_http_transport(*, allow_private_ips: bool = False, **kwargs: Any) -> Any:
     """Return an httpx sync transport that pins direct TCP connects to vetted IPs."""
     import contextvars
     import httpx
@@ -739,7 +716,7 @@ def ssrf_safe_http_transport(**kwargs: Any) -> Any:
         def __init__(self, **transport_kwargs: Any):
             super().__init__(**transport_kwargs)
             self._pool._network_backend = _SSRFGuardedNetworkBackend(  # type: ignore[attr-defined]
-                schemes_by_origin_var
+                schemes_by_origin_var, allow_private_ips=allow_private_ips
             )
 
         def handle_request(self, request: Any) -> Any:

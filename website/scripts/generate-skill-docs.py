@@ -697,15 +697,7 @@ def write_sidebar(entries):
     sidebar_path = REPO / "website" / "sidebars.ts"
     text = sidebar_path.read_text(encoding="utf-8")
     # Replace the existing Skills block.
-    pattern = re.compile(
-        r"        \{\n"
-        r"          type: 'category',\n"
-        r"          label: 'Skills',\n"
-        r"(?:.*?\n)*?"
-        r"        \},\n",
-        re.DOTALL,
-    )
-    # Safer: match the exact current block shape.
+    # Match the exact current block shape.
     old_block_start = "        {\n          type: 'category',\n          label: 'Skills',\n"
     i = text.find(old_block_start)
     if i == -1:

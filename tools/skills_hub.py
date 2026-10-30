@@ -2922,8 +2922,8 @@ class BrowseShSource(SkillSource):
         if cached is not None:
             return cached
         try:
-            resp = httpx.get(self.CATALOG_URL, timeout=20)
-            if resp.status_code != 200:
+            resp = _guarded_http_get(self.CATALOG_URL, timeout=20)
+            if resp is None or resp.status_code != 200:
                 return []
             data = resp.json()
         except (httpx.HTTPError, json.JSONDecodeError):
@@ -3008,8 +3008,8 @@ class BrowseShSource(SkillSource):
         if not md_url:
             return None
         try:
-            resp = httpx.get(md_url, timeout=20, follow_redirects=True)
-            if resp.status_code != 200:
+            resp = _guarded_http_get(md_url, timeout=20)
+            if resp is None or resp.status_code != 200:
                 return None
             content = resp.text
         except httpx.HTTPError:
@@ -3039,22 +3039,19 @@ class BrowseShSource(SkillSource):
         ``sourceUrl`` (some entries may), use it directly.
         """
         try:
-            detail = httpx.get(
-                self.SKILL_DETAIL_URL.format(slug=slug),
-                timeout=20,
-                follow_redirects=True,
-            )
-            if detail.status_code == 200:
+            detail = _guarded_http_get(self.SKILL_DETAIL_URL.format(slug=slug), timeout=20)
+            if detail is not None and detail.status_code == 200:
                 data = detail.json()
                 if isinstance(data, dict):
                     md_url = data.get("skillMdUrl")
-                    if isinstance(md_url, str) and md_url.startswith("http"):
+                    if isinstance(md_url, str) and urlsplit(md_url).scheme == "https":
                         return md_url
         except (httpx.HTTPError, json.JSONDecodeError):
             pass
 
         source_url = item.get("sourceUrl", "") if isinstance(item, dict) else ""
-        if source_url and "raw.githubusercontent.com" in source_url:
+        parsed_source = urlsplit(source_url) if isinstance(source_url, str) else None
+        if parsed_source and parsed_source.scheme == "https" and parsed_source.hostname == "raw.githubusercontent.com":
             return source_url
         return None
 

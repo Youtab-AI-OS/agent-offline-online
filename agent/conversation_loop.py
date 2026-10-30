@@ -234,24 +234,16 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     if runtime_ctx >= MINIMUM_CONTEXT_LENGTH:
         return None
 
-    model = getattr(agent, "model", "") or "the selected model"
-    base_url = getattr(agent, "base_url", "") or "unknown base URL"
-    provider = getattr(agent, "provider", "") or "unknown"
     tool_count = len(getattr(agent, "tools", None) or [])
 
     logger.warning(
         "Ollama runtime context too small for Youtab tool use: "
-        "model=%s provider=%s base_url=%s runtime_context=%d "
-        "minimum_context=%d estimated_request_tokens=%d tool_count=%d "
-        "session=%s",
-        model,
-        provider,
-        base_url,
+        "runtime_context=%d "
+        "minimum_context=%d estimated_request_tokens=%d tool_count=%d",
         runtime_ctx,
         MINIMUM_CONTEXT_LENGTH,
         request_tokens,
         tool_count,
-        getattr(agent, "session_id", None) or "none",
     )
 
     return (
@@ -485,13 +477,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         return
     if stored_prompt:
         stored_state = "stale_runtime"
-        logger.info(
-            "Stored system prompt for session %s has stale runtime identity; "
-            "rebuilding for model=%s provider=%s.",
-            agent.session_id,
-            getattr(agent, "model", "") or "",
-            getattr(agent, "provider", "") or "",
-        )
+        logger.info("Stored system prompt has stale runtime identity; rebuilding")
 
     if conversation_history and stored_state in ("null", "empty"):
         # Continuing session whose stored prompt is unusable.  The
@@ -2375,11 +2361,7 @@ def run_conversation(
                                     else str(_codex_error_obj) if _codex_error_obj
                                     else f"Responses API returned status '{_codex_resp_status}'"
                                 )
-                                logger.warning(
-                                    "Codex response status='%s' (error=%s). Routing to fallback. %s",
-                                    _codex_resp_status, _codex_error_msg,
-                                    agent._client_log_context(),
-                                )
+                                logger.warning("Codex response failed; routing to fallback")
                                 response_invalid = True
                                 error_details.append(f"response.status={_codex_resp_status}: {_codex_error_msg}")
                             else:
@@ -2394,15 +2376,7 @@ def run_conversation(
                                         len(_out_text_stripped),
                                     )
                                 else:
-                                    _resp_status = getattr(response, "status", None)
-                                    _resp_incomplete = getattr(response, "incomplete_details", None)
-                                    logger.warning(
-                                        "Codex response.output is empty after stream backfill "
-                                        "(status=%s, incomplete_details=%s, model=%s). %s",
-                                        _resp_status, _resp_incomplete,
-                                        getattr(response, "model", None),
-                                        f"api_mode={agent.api_mode} provider={agent.provider}",
-                                    )
+                                    logger.warning("Codex response.output is empty after stream backfill")
                                     response_invalid = True
                                     error_details.append("response.output is empty")
                 elif agent.api_mode == "anthropic_messages":
@@ -2565,7 +2539,7 @@ def run_conversation(
                     # Backoff before retry — jittered exponential: 5s base, 120s cap
                     wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
                     agent._buffer_vprint(f"⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...")
-                    logger.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
+                    logger.warning("Invalid API response (retry %s/%s)", retry_count, max_retries)
                     
                     # Sleep in small increments to stay responsive to interrupts
                     sleep_end = time.time() + wait_time
@@ -2726,17 +2700,7 @@ def run_conversation(
                         continue
 
                     agent._flush_status_buffer()
-                    _refusal_log = (
-                        _refusal_text[:500] + "..."
-                        if len(_refusal_text) > 500
-                        else _refusal_text
-                    )
-                    logger.warning(
-                        "%sModel declined to respond (finish_reason=content_filter). "
-                        "model=%s provider=%s refusal=%s",
-                        agent.log_prefix, agent.model, agent.provider,
-                        _refusal_log or "(no text)",
-                    )
+                    logger.warning("Model declined to respond (finish_reason=content_filter)")
                     agent._emit_status(
                         "⚠️ The model declined to respond to this request (safety refusal)."
                     )
@@ -3195,10 +3159,9 @@ def run_conversation(
                     if canonical_usage.cache_read_tokens and prompt_tokens:
                         _cache_pct = f" cache={canonical_usage.cache_read_tokens}/{prompt_tokens} ({100*canonical_usage.cache_read_tokens/prompt_tokens:.0f}%)"
                     logger.info(
-                        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s",
-                        agent.session_api_calls, agent.model, agent.provider or "unknown",
-                        prompt_tokens, completion_tokens, total_tokens,
-                        api_duration, _cache_pct,
+                        "API call #%d: in=%d out=%d total=%d latency=%.1fs%s",
+                        agent.session_api_calls, prompt_tokens, completion_tokens,
+                        total_tokens, api_duration, _cache_pct,
                     )
 
                     # On the MoA path, agent.model/provider are the virtual
@@ -3904,7 +3867,7 @@ def run_conversation(
                     else:
                         auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
                         print(f"{agent.log_prefix}   Auth method: {auth_method}")
-                        print(f"{agent.log_prefix}   Token prefix: {key[:12]}..." if isinstance(key, str) and len(key) > 12 else f"{agent.log_prefix}   Token: (empty or short)")
+                        print(f"{agent.log_prefix}   Token: configured" if isinstance(key, str) and len(key) > 12 else f"{agent.log_prefix}   Token: (empty or short)")
                     print(f"{agent.log_prefix}   Troubleshooting:")
                     from youtab_constants import display_youtab_home as _dhh_fn
                     _dhh = _dhh_fn()
@@ -4062,12 +4025,8 @@ def run_conversation(
                 error_msg = str(api_error).lower()
                 _error_summary = agent._summarize_api_error(api_error)
                 logger.warning(
-                    "API call failed (attempt %s/%s) error_type=%s %s summary=%s",
-                    retry_count,
-                    max_retries,
-                    error_type,
-                    agent._client_log_context(),
-                    _error_summary,
+                    "API call failed (attempt %s/%s) error_type=%s",
+                    retry_count, max_retries, error_type,
                 )
 
                 _provider = getattr(agent, "provider", "unknown")
@@ -4447,7 +4406,7 @@ def run_conversation(
                 if (
                     status_code == 413
                     and isinstance(agent.base_url, str)
-                    and "models.inference.ai.azure.com" in agent.base_url
+                    and base_url_host_matches(agent.base_url, "models.inference.ai.azure.com")
                 ):
                     agent._vprint(
                         f"{agent.log_prefix}   💡 GitHub Models free tier (models.inference.ai.azure.com) caps every",
@@ -5231,11 +5190,7 @@ def run_conversation(
                             force=True,
                         )
 
-                    logger.error(
-                        "%sAPI call failed after %s retries. %s | provider=%s model=%s msgs=%s tokens=~%s",
-                        agent.log_prefix, max_retries, _final_summary,
-                        _provider, _model, len(api_messages), f"{approx_tokens:,}",
-                    )
+                    logger.error("API call failed after %s retries", max_retries)
                     if api_kwargs is not None:
                         agent._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
@@ -5337,13 +5292,8 @@ def run_conversation(
                 else:
                     agent._buffer_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
                 logger.warning(
-                    "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
-                    wait_time,
-                    retry_count,
-                    max_retries,
-                    agent._client_log_context(),
-                    _backoff_policy or "default",
-                    api_error,
+                    "Retrying API call in %ss (attempt %s/%s)",
+                    wait_time, retry_count, max_retries,
                 )
                 # Sleep in small increments so we can respond to interrupts quickly
                 # instead of blocking the entire wait_time in one sleep() call
@@ -6507,11 +6457,7 @@ def run_conversation(
                     )
                     if _truly_empty and (not _has_structured or _prefill_exhausted) and agent._empty_content_retries < 3:
                         agent._empty_content_retries += 1
-                        logger.warning(
-                            "Empty response (no content or reasoning) — "
-                            "retry %d/3 (model=%s)",
-                            agent._empty_content_retries, agent.model,
-                        )
+                        logger.warning("Empty response (no content or reasoning) — retry %d/3", agent._empty_content_retries)
                         agent._buffer_status(
                             f"⚠️ Empty response from model — retrying "
                             f"({agent._empty_content_retries}/3)"
@@ -6525,12 +6471,7 @@ def run_conversation(
                     # (e.g. GLM-4.5-Air) consistently returns empty
                     # due to context degradation or provider issues.
                     if _truly_empty and agent._fallback_chain:
-                        logger.warning(
-                            "Empty response after %d retries — "
-                            "attempting fallback (model=%s, provider=%s)",
-                            agent._empty_content_retries, agent.model,
-                            agent.provider,
-                        )
+                        logger.warning("Empty response after %d retries — attempting fallback", agent._empty_content_retries)
                         agent._buffer_status(
                             "⚠️ Model returning empty responses — "
                             "switching to fallback provider..."
@@ -6543,11 +6484,7 @@ def run_conversation(
                                 f"↻ Switched to fallback: {agent.model} "
                                 f"({agent.provider})"
                             )
-                            logger.info(
-                                "Fallback activated after empty responses: "
-                                "now using %s on %s",
-                                agent.model, agent.provider,
-                            )
+                            logger.info("Fallback activated after empty responses")
                             continue
 
                     # Exhausted retries and fallback chain (or no
@@ -6570,12 +6507,7 @@ def run_conversation(
                     messages.append(assistant_msg)
 
                     if reasoning_text:
-                        reasoning_preview = reasoning_text[:500] + "..." if len(reasoning_text) > 500 else reasoning_text
-                        logger.warning(
-                            "Reasoning-only response (no visible content) "
-                            "after exhausting retries and fallback. "
-                            "Reasoning: %s", reasoning_preview,
-                        )
+                        logger.warning("Reasoning-only response after exhausting retries and fallback")
                         agent._emit_status(
                             "⚠️ Model produced reasoning but no visible "
                             "response after all retries. Returning empty."
@@ -6583,10 +6515,8 @@ def run_conversation(
                     else:
                         logger.warning(
                             "Empty response (no content or reasoning) "
-                            "after %d retries. No fallback available. "
-                            "model=%s provider=%s",
-                            agent._empty_content_retries, agent.model,
-                            agent.provider,
+                            "after %d retries. No fallback available.",
+                            agent._empty_content_retries,
                         )
                         agent._emit_status(
                             "❌ Model returned no content after all retries"
@@ -6694,10 +6624,8 @@ def run_conversation(
                 ):
                     agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1
                     logger.warning(
-                        "finish_reason=tool_calls with empty tool_calls array "
-                        "(narration only) — re-prompting to emit the call "
-                        "(retry %d/3, model=%s provider=%s)",
-                        agent._dropped_toolcall_retries, agent.model, agent.provider,
+                        "finish_reason=tool_calls with empty tool_calls array — re-prompting (%d/3)",
+                        agent._dropped_toolcall_retries,
                     )
                     agent._emit_status(
                         "↻ Model signaled a tool call but sent none — "

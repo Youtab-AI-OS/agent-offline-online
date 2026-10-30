@@ -47,6 +47,15 @@ class TestIsOAuthToken:
 
 class TestBuildAnthropicClient:
 
+    def test_provider_name_in_foreign_url_does_not_select_provider_auth(self):
+        from agent.anthropic_adapter import (
+            _base_url_needs_context_1m_beta,
+            _is_third_party_anthropic_endpoint,
+        )
+
+        assert _is_third_party_anthropic_endpoint("https://evil.example/anthropic.com/v1")
+        assert not _base_url_needs_context_1m_beta("https://evil.example/azure.com/v1")
+
 
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:

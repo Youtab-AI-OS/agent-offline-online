@@ -5,15 +5,33 @@
 #56889, which isolates callers that pass different explicit ``model=`` values.
 """
 
-import asyncio
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import agent.auxiliary_client as aux
+from utils import credential_cache_digest
+
+
+def test_cache_fingerprint_is_stable_and_separates_tokens_and_purposes():
+    first = credential_cache_digest("synthetic-token-a", purpose=b"gateway-agent")
+    assert first == credential_cache_digest("synthetic-token-a", purpose=b"gateway-agent")
+    assert first != credential_cache_digest("synthetic-token-b", purpose=b"gateway-agent")
+    assert first != credential_cache_digest("synthetic-token-a", purpose=b"aux-client")
+    assert b"synthetic-token-a" not in first
+
+
+def test_cache_fingerprint_changes_across_processes():
+    code = (
+        "from utils import credential_cache_digest; "
+        "print(credential_cache_digest('synthetic-token', "
+        "purpose=b'gateway-agent').hex())"
+    )
+    first = subprocess.check_output([sys.executable, "-c", code], text=True).strip()
+    second = subprocess.check_output([sys.executable, "-c", code], text=True).strip()
+    assert first != second
 
 
 @pytest.fixture(autouse=True)
@@ -146,6 +164,12 @@ def test_string_api_keys_are_not_retained_in_cache_key_repr():
         main_runtime={**_runtime("same"), "api_key": second_secret},
     )
 
+    assert first == aux._client_cache_key(
+        "auto",
+        async_mode=False,
+        api_key=first_secret,
+        main_runtime={**_runtime("same"), "api_key": first_secret},
+    )
     assert first != second
     rendered = repr((first, second))
     assert first_secret not in rendered

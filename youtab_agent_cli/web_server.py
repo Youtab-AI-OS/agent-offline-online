@@ -8342,6 +8342,21 @@ def _probe_custom_endpoint(base_url: str, api_key: str = "") -> Dict[str, Any]:
     if not valid:
         return {"ok": False, "reachable": False, "message": "Enter a valid HTTP or HTTPS endpoint URL.", "models": []}
 
+    from tools.url_safety import (
+        SSRFConnectionBlocked, is_always_blocked_url, ssrf_safe_http_transport,
+    )
+    if is_always_blocked_url(base_url):
+        return {"ok": False, "reachable": False, "message": "This endpoint address is blocked.", "models": []}
+
+    # Local model servers are an explicit user choice. Public hostnames still
+    # reject private DNS answers at connect time, including DNS rebinding.
+    import ipaddress
+    try:
+        ipaddress.ip_address(parsed.hostname)
+        explicit_local = True
+    except ValueError:
+        explicit_local = parsed.hostname == "localhost"
+
     headers = {"Accept": "application/json"}
     if api_key.strip():
         headers["Authorization"] = f"Bearer {api_key.strip()}"
@@ -8355,10 +8370,10 @@ def _probe_custom_endpoint(base_url: str, api_key: str = "") -> Dict[str, Any]:
         # implicit system/env proxies from overriding a bypass, while keeping
         # the normal TLS/CA environment and verification defaults intact.
         mounts = None if proxy else {
-            "http://": httpx.HTTPTransport(),
-            "https://": httpx.HTTPTransport(),
+            "http://": ssrf_safe_http_transport(allow_private_ips=explicit_local),
+            "https://": ssrf_safe_http_transport(allow_private_ips=explicit_local),
         }
-        with httpx.Client(timeout=httpx.Timeout(8.0), proxy=proxy, transport=httpx.HTTPTransport(), mounts=mounts, follow_redirects=False) as client:
+        with httpx.Client(timeout=httpx.Timeout(8.0), proxy=proxy, transport=ssrf_safe_http_transport(allow_private_ips=explicit_local), mounts=mounts, follow_redirects=False) as client:
             response = client.get(base_url + "/models", headers=headers)
             # Ollama, llama.cpp and LM Studio commonly display a bare server
             # address. Try the standard OpenAI path only for a missing root
@@ -8366,6 +8381,8 @@ def _probe_custom_endpoint(base_url: str, api_key: str = "") -> Dict[str, Any]:
             if response.status_code == 404 and not parsed.path.strip("/"):
                 base_url += "/v1"
                 response = client.get(base_url + "/models", headers=headers)
+    except SSRFConnectionBlocked:
+        return {"ok": False, "reachable": False, "message": "This endpoint address is blocked.", "models": []}
     except ValueError:
         # Client construction can reject an unsupported selected proxy before
         # an HTTP request exists. Never echo its URL or embedded credentials.

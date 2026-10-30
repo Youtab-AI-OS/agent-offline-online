@@ -491,11 +491,7 @@ def build_turn_context(
     agent.iteration_budget = IterationBudget(agent.max_iterations)
 
     # Keep ordinary diagnostics content-free; the chat and model retain the input.
-    logger.info(
-        "conversation turn: session=%s turn=%s model=%s provider=%s platform=%s history=%d",
-        agent.session_id or "none", turn_id, agent.model, agent.provider or "unknown",
-        agent.platform or "unknown", len(conversation_history or []),
-    )
+    logger.info("conversation turn: started")
 
     # Initialize conversation (copy to avoid mutating the caller's list).
     messages = list(conversation_history) if conversation_history else []
@@ -795,31 +791,16 @@ def build_turn_context(
         _should_compress_now = False
         _compress_block_reason = None
         if _preflight_deferred:
-            logger.info(
-                "Skipping preflight compression: rough estimate ~%s >= %s, "
-                "but last real provider prompt was %s after compression",
-                f"{_preflight_tokens:,}",
-                f"{_compressor.threshold_tokens:,}",
-                f"{_compressor.last_real_prompt_tokens:,}",
-            )
+            logger.info("Skipping preflight compression after prior provider estimate")
         elif _compression_cooldown:
-            logger.info(
-                "Skipping preflight compression: same-session cooldown active "
-                "(~%s seconds remaining, session %s)",
-                int(_compression_cooldown.get("remaining_seconds", 0.0)),
-                agent.session_id or "none",
-            )
+            logger.info("Skipping preflight compression: cooldown active")
             if _preflight_tokens >= _compressor.threshold_tokens:
                 # Context is over threshold but compression is blocked by the
                 # summary-LLM cooldown — surface a warning (see block below).
                 _cooldown_secs = _compression_cooldown.get("remaining_seconds", 0.0)
                 _compress_block_reason = f"cooldown:{_cooldown_secs:.0f}"
         elif _codex_native_auto:
-            logger.info(
-                "Skipping Youtab preflight compression for codex app-server "
-                "(mode=%s); Youtab will not start thread compaction here.",
-                getattr(agent, "codex_app_server_auto_compaction", "native"),
-            )
+            logger.info("Skipping Youtab preflight compression for codex app-server")
         else:
             _should_compress_now = _compressor.should_compress(_preflight_tokens)
             if not _should_compress_now:
@@ -845,13 +826,7 @@ def build_turn_context(
             _clear_warn = getattr(agent, "_clear_context_overflow_warn", None)
             if callable(_clear_warn):
                 _clear_warn()
-            logger.info(
-                "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
-                f"{_preflight_tokens:,}",
-                f"{_compressor.threshold_tokens:,}",
-                agent.model,
-                f"{_compressor.context_length:,}",
-            )
+            logger.info("Preflight compression started")
             _preflight_status = automatic_compaction_status_message(
                 _compressor,
                 phase="preflight",
@@ -991,23 +966,13 @@ def build_turn_context(
             if callable(_engine_preflight):
                 try:
                     _wants_engine_preflight = bool(_engine_preflight(messages))
-                except Exception as _preflight_exc:
+                except Exception:
                     # A buggy engine must never break an otherwise-healthy
                     # turn: swallow at debug level and skip maintenance.
-                    logger.debug(
-                        "should_compress_preflight raised %s; skipping "
-                        "engine-driven preflight maintenance",
-                        _preflight_exc,
-                    )
+                    logger.debug("should_compress_preflight failed; skipping engine-driven preflight maintenance")
                     _wants_engine_preflight = False
             if _wants_engine_preflight:
-                logger.info(
-                    "Engine-driven preflight maintenance: %s requested "
-                    "compress() at ~%s tokens (below %s threshold)",
-                    getattr(_compressor, "name", type(_compressor).__name__),
-                    f"{_preflight_tokens:,}",
-                    f"{getattr(_compressor, 'threshold_tokens', 0):,}",
-                )
+                logger.info("Engine-driven preflight maintenance started")
                 _engine_input = messages
                 messages, active_system_prompt = agent._compress_context(
                     messages, system_message, approx_tokens=_preflight_tokens,

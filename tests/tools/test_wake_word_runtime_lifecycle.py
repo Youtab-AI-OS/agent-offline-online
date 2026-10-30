@@ -593,11 +593,23 @@ def test_a_second_session_inherits_no_dead_microphone_verdict(monkeypatch, wired
     assert ww.audio_is_silent() is True
     assert ww.stop_listening(owner=owner) is True
 
+    read_entered = threading.Event()
+    release_read = threading.Event()
+    original_read = _Stream.read
+
+    def blocked_read(stream, n):
+        read_entered.set()
+        release_read.wait(timeout=_SCHEDULING_CEILING_S)
+        return original_read(stream, n)
+
+    monkeypatch.setattr(_Stream, "read", blocked_read)
     second = ww.start_listening(lambda: None, owner=owner, config={})
     try:
+        assert read_entered.wait(timeout=_SCHEDULING_CEILING_S)
         assert second.audio_silent is False
         assert second._silent_frames == 0
     finally:
+        release_read.set()
         assert ww.stop_listening(owner=owner) is True
 
 

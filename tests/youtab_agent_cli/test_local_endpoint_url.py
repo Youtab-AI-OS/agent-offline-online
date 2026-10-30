@@ -46,6 +46,48 @@ def test_server_403_without_a_key_is_access_policy_not_invalid_key(monkeypatch):
     assert "private upstream detail" not in result["message"]
 
 
+def test_custom_endpoint_probe_rejects_cloud_metadata_before_http(monkeypatch):
+    import httpx
+    from youtab_agent_cli import web_server as ws
+
+    monkeypatch.setattr(httpx, "Client", lambda **_kwargs: pytest.fail("metadata target reached HTTP"))
+    result = ws._probe_custom_endpoint("http://169.254.169.254/latest/meta-data")
+    assert result == {"ok": False, "reachable": False, "message": "This endpoint address is blocked.", "models": []}
+
+
+@pytest.mark.parametrize("rebound_ip", ["127.0.0.1", "169.254.169.254"])
+def test_custom_endpoint_probe_blocks_dns_rebind_before_sending_key(monkeypatch, rebound_ip):
+    import socket
+    from youtab_agent_cli import web_server as ws
+
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    resolutions = []
+
+    def resolve(host, port, *_args, **_kwargs):
+        resolutions.append(host)
+        ip = "93.184.216.34" if len(resolutions) == 1 else rebound_ip
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    result = ws._probe_custom_endpoint("http://rebind.example:16731/v1", "synthetic-secret")
+    assert len(resolutions) >= 2
+    assert result == {"ok": False, "reachable": False, "message": "This endpoint address is blocked.", "models": []}
+
+
+def test_custom_endpoint_probe_requires_dashboard_session(monkeypatch, _isolate_youtab_home):
+    import httpx
+    from fastapi.testclient import TestClient
+    from youtab_agent_cli import web_server as ws
+
+    monkeypatch.setattr(httpx, "Client", lambda **_kwargs: pytest.fail("unauthorized probe reached HTTP"))
+    response = TestClient(ws.app).post(
+        "/api/providers/custom-endpoints/validate",
+        json={"name": "Synthetic", "base_url": "http://127.0.0.1:12345/v1", "model": ""},
+    )
+    assert response.status_code == 401
+
+
 def test_unsupported_selected_proxy_returns_safe_configuration_error(monkeypatch, _isolate_youtab_home):
     import httpx
     from starlette.testclient import TestClient

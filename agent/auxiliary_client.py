@@ -43,7 +43,6 @@ Payment / credit exhaustion fallback:
 import contextlib
 import contextvars
 import functools
-import hashlib
 import inspect
 import json
 import logging
@@ -110,7 +109,7 @@ from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from youtab_agent_cli.config import get_youtab_home
 from youtab_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, credential_cache_digest, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -472,7 +471,7 @@ def _fixed_temperature_for_model(
         ``None`` — no override; caller should use its own default.
     """
     if _is_kimi_model(model):
-        logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
+        logger.debug("Omitting temperature for Kimi model (server-managed)")
         return OMIT_TEMPERATURE
     if _is_arcee_trinity_thinking(model):
         return 0.5
@@ -841,19 +840,19 @@ def _to_openai_base_url(base_url: str) -> str:
     if url.endswith("/anthropic"):
         # ZAI (open.bigmodel.cn) uses /api/anthropic for Anthropic wire
         # but /api/paas/v4 for OpenAI wire — the generic /v1 rewrite is wrong.
-        if "open.bigmodel.cn" in url or "bigmodel" in url:
+        if base_url_host_matches(url, "bigmodel.cn"):
             rewritten = url[: -len("/anthropic")] + "/paas/v4"
-            logger.debug("Auxiliary client: rewrote ZAI base URL %s → %s", url, rewritten)
+            logger.debug("Auxiliary client: rewrote ZAI base URL")
             return rewritten
         rewritten = url[: -len("/anthropic")] + "/v1"
-        logger.debug("Auxiliary client: rewrote base URL %s → %s", url, rewritten)
+        logger.debug("Auxiliary client: rewrote base URL")
         return rewritten
-    if "api.kimi.com" in url and url.endswith("/coding"):
+    if base_url_host_matches(url, "api.kimi.com") and url.endswith("/coding"):
         # Kimi Code uses /coding/v1/messages for Anthropic SDK (appends /v1/messages)
         # but /coding/v1/chat/completions for OpenAI SDK (appends /chat/completions)
         # Without /v1 here, OpenAI SDK hits /coding/chat/completions — a 404.
         rewritten = url + "/v1"
-        logger.debug("Auxiliary client: rewrote Kimi base URL %s → %s", url, rewritten)
+        logger.debug("Auxiliary client: rewrote Kimi base URL")
         return rewritten
     return url
 
@@ -863,14 +862,14 @@ def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
     try:
         pool = load_pool(provider)
     except Exception as exc:
-        logger.debug("Auxiliary client: could not load pool for %s: %s", provider, exc)
+        logger.debug("Auxiliary client: could not load pool for %s (%s)", provider, type(exc).__name__)
         return False, None
     if not pool or not pool.has_credentials():
         return False, None
     try:
         return True, pool.select()
     except Exception as exc:
-        logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc)
+        logger.debug("Auxiliary client: could not select pool entry for %s (%s)", provider, type(exc).__name__)
         return True, None
 
 
@@ -879,7 +878,7 @@ def _peek_pool_entry(provider: str) -> Optional[Any]:
     try:
         pool = load_pool(provider)
     except Exception as exc:
-        logger.debug("Auxiliary client: could not load pool for %s (peek): %s", provider, exc)
+        logger.debug("Auxiliary client: could not load pool for %s (peek, %s)", provider, type(exc).__name__)
         return None
     if not pool or not pool.has_credentials():
         return None
@@ -893,7 +892,7 @@ def _peek_pool_entry(provider: str) -> Optional[Any]:
         if callable(peek_fn):
             return peek_fn()
     except Exception as exc:
-        logger.debug("Auxiliary client: could not peek pool entry for %s: %s", provider, exc)
+        logger.debug("Auxiliary client: could not peek pool entry for %s (%s)", provider, type(exc).__name__)
     return None
 
 
@@ -1774,9 +1773,8 @@ def _maybe_wrap_anthropic(
         from agent.anthropic_adapter import build_anthropic_client
     except ImportError:
         logger.warning(
-            "Endpoint %s speaks Anthropic Messages but the anthropic SDK is "
+            "Endpoint speaks Anthropic Messages but the anthropic SDK is "
             "not installed — falling back to OpenAI-wire (will likely 404).",
-            base_url,
         )
         return client_obj
 
@@ -1784,16 +1782,12 @@ def _maybe_wrap_anthropic(
         real_client = build_anthropic_client(api_key, base_url)
     except Exception as exc:
         logger.warning(
-            "Failed to build Anthropic client for %s (%s) — falling back to "
-            "OpenAI-wire client.", base_url, exc,
+            "Failed to build Anthropic client (%s) — falling back to "
+            "OpenAI-wire client.", type(exc).__name__,
         )
         return client_obj
 
-    logger.debug(
-        "Auxiliary transport: wrapping client in AnthropicAuxiliaryClient "
-        "(model=%s, base_url=%s, api_mode=%s)",
-        model, base_url[:60] if base_url else "", api_mode or "auto-detected",
-    )
+    logger.debug("Auxiliary transport: wrapping client in AnthropicAuxiliaryClient")
     return AnthropicAuxiliaryClient(
         real_client, model, api_key, base_url, is_oauth=False,
     )
@@ -1833,7 +1827,7 @@ def _read_youtab_auth() -> Optional[dict]:
             return None
         return provider
     except Exception as exc:
-        logger.debug("Could not read Youtab auth: %s", exc)
+        logger.debug("Could not read Youtab auth (%s)", type(exc).__name__)
         return None
 
 
@@ -1869,7 +1863,7 @@ def _resolve_youtab_pool_runtime_api(*, force_refresh: bool = False) -> Optional
 
         pool = load_pool("youtab")
     except Exception as exc:
-        logger.debug("Auxiliary Youtab pool credential resolution failed: %s", exc)
+        logger.debug("Auxiliary Youtab pool credential resolution failed (%s)", type(exc).__name__)
         return None
 
     if not pool or not pool.has_credentials():
@@ -1878,7 +1872,7 @@ def _resolve_youtab_pool_runtime_api(*, force_refresh: bool = False) -> Optional
     try:
         entry = pool.select()
     except Exception as exc:
-        logger.debug("Auxiliary Youtab pool selection failed: %s", exc)
+        logger.debug("Auxiliary Youtab pool selection failed (%s)", type(exc).__name__)
         return None
 
     if entry is None:
@@ -1893,7 +1887,7 @@ def _resolve_youtab_pool_runtime_api(*, force_refresh: bool = False) -> Optional
         try:
             refreshed = pool.try_refresh_current()
         except Exception as exc:
-            logger.debug("Auxiliary Youtab pool refresh failed: %s", exc)
+            logger.debug("Auxiliary Youtab pool refresh failed (%s)", type(exc).__name__)
             refreshed = None
         if refreshed is None:
             return None
@@ -1943,7 +1937,7 @@ def _resolve_youtab_runtime_api(*, force_refresh: bool = False) -> Optional[tupl
             force_refresh=force_refresh,
         )
     except Exception as exc:
-        logger.debug("Auxiliary Youtab runtime credential resolution failed: %s", exc)
+        logger.debug("Auxiliary Youtab runtime credential resolution failed (%s)", type(exc).__name__)
         return None
 
     api_key = str(creds.get("api_key") or "").strip()
@@ -1991,14 +1985,14 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
                 if api_key and base_url:
                     return api_key, base_url
     except Exception as exc:
-        logger.debug("Auxiliary xAI OAuth pool credential resolution failed: %s", exc)
+        logger.debug("Auxiliary xAI OAuth pool credential resolution failed (%s)", type(exc).__name__)
 
     try:
         from youtab_agent_cli.auth import resolve_xai_oauth_runtime_credentials
 
         creds = resolve_xai_oauth_runtime_credentials()
     except Exception as exc:
-        logger.debug("Auxiliary xAI OAuth runtime credential resolution failed: %s", exc)
+        logger.debug("Auxiliary xAI OAuth runtime credential resolution failed (%s)", type(exc).__name__)
         return None
 
     api_key = str(creds.get("api_key") or "").strip()
@@ -2047,7 +2041,7 @@ def _read_codex_access_token() -> Optional[str]:
 
         return access_token.strip()
     except Exception as exc:
-        logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
+        logger.debug("Could not read Codex auth for auxiliary client (%s)", type(exc).__name__)
         return None
 
 
@@ -2477,9 +2471,7 @@ def _resolve_moa_aggregator(preset_name: Optional[str]) -> Tuple[Optional[str], 
         if agg_provider and agg_model and agg_provider.lower() != "moa":
             return agg_provider, agg_model
     except Exception:
-        logger.debug(
-            "MoA aggregator resolution failed for preset %r", preset_name, exc_info=True
-        )
+        logger.debug("MoA aggregator resolution failed")
     return None, None
 
 
@@ -2833,7 +2825,7 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
 
         runtime = resolve_runtime_provider(requested="custom")
     except Exception as exc:
-        logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
+        logger.debug("Auxiliary client: custom runtime resolution failed (%s)", type(exc).__name__)
         runtime = None
 
     if not isinstance(runtime, dict):
@@ -3009,7 +3001,7 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     if resolved is None:
         return None, None
     api_key, base_url = resolved
-    logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
+    logger.debug("Auxiliary client: xAI OAuth via Responses API")
     from tools.xai_http import youtab_xai_default_headers
 
     real_client = _create_openai_client(
@@ -3052,7 +3044,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
         if not codex_token:
             return None, None
         base_url = _CODEX_AUX_BASE_URL
-    logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
+    logger.debug("Auxiliary client: Codex OAuth via Responses API")
     real_client = _create_openai_client(
         api_key=codex_token,
         base_url=base_url,
@@ -3139,10 +3131,7 @@ def _try_azure_foundry(
         # No fallback aux model for Azure — the user must have a
         # deployment name. Surface that as "no client" so the auto
         # chain falls through to the next provider rather than 404ing.
-        logger.debug(
-            "Auxiliary azure-foundry: no model resolved (model=%r, default=%r)",
-            model, model_cfg.get("default"),
-        )
+        logger.debug("Auxiliary azure-foundry: no model resolved")
         return None, None
 
     # Azure pre-v1 endpoints sometimes carry api-version query params
@@ -3924,7 +3913,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     try:
         pool = load_pool(normalized)
     except Exception as load_exc:
-        logger.debug("Auxiliary client: could not load pool for %s recovery: %s", normalized, load_exc)
+        logger.debug("Auxiliary client: could not load pool for %s recovery (%s)", normalized, type(load_exc).__name__)
         return False
     if not pool or not pool.has_credentials():
         return False
@@ -4191,7 +4180,7 @@ def _refresh_provider_credentials(provider: str) -> bool:
             _evict_cached_clients(normalized)
             return True
     except Exception as exc:
-        logger.debug("Auxiliary provider credential refresh failed for %s: %s", normalized, exc)
+        logger.debug("Auxiliary provider credential refresh failed for %s (%s)", normalized, type(exc).__name__)
         return False
     return False
 
@@ -5374,11 +5363,7 @@ def resolve_provider_client(
         Clients that are already specialized wrappers pass through unchanged.
         """
         if _needs_codex_wrap(client_obj, base_url_str, final_model_str):
-            logger.debug(
-                "resolve_provider_client: wrapping client in CodexAuxiliaryClient "
-                "(api_mode=%s, model=%s, base_url=%s)",
-                api_mode or "auto-detected", final_model_str,
-                base_url_str[:60] if base_url_str else "")
+            logger.debug("resolve_provider_client: wrapping client in CodexAuxiliaryClient")
             return CodexAuxiliaryClient(client_obj, final_model_str)
         # Anthropic-wire endpoints: rewrap plain OpenAI clients so
         # chat.completions.create() is translated to /v1/messages.
@@ -5396,9 +5381,7 @@ def resolve_provider_client(
         # "google/gemini-3-flash-preview" won't work.  Drop it and use
         # the provider's own default model instead.
         if model and "/" in model and resolved and "/" not in resolved:
-            logger.debug(
-                "Dropping OpenRouter-format model %r for non-OpenRouter "
-                "auxiliary provider (using %r instead)", model, resolved)
+            logger.debug("Dropping OpenRouter-format model for non-OpenRouter auxiliary provider")
             model = None
         final_model = model or resolved
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -5608,10 +5591,9 @@ def resolve_provider_client(
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(
-                    "resolve_provider_client: named custom provider %r has no resolvable "
+                    "resolve_provider_client: named custom provider has no resolvable "
                     "api_key — request will be sent with placeholder no-key-required "
-                    "and will 401 on auth-required endpoints",
-                    custom_entry.get("name") or provider,
+                    "and will 401 on auth-required endpoints"
                 )
             # An explicit per-task api_mode override (from _resolve_task_provider_model)
             # wins; otherwise fall back to what the provider entry declared.
@@ -5640,9 +5622,7 @@ def resolve_provider_client(
                 _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
                 if _headers2:
                     _extra2["default_headers"] = _headers2
-                logger.debug(
-                    "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
-                    provider, final_model, entry_api_mode or "chat_completions")
+                logger.debug("resolve_provider_client: named custom provider configured")
                 # anthropic_messages: route through the Anthropic Messages API
                 # via AnthropicAuxiliaryClient. Mirrors the anonymous-custom
                 # branch in _try_custom_endpoint(). See #15033.
@@ -5652,10 +5632,9 @@ def resolve_provider_client(
                         real_client = build_anthropic_client(custom_key, custom_base)
                     except ImportError:
                         logger.warning(
-                            "Named custom provider %r declares api_mode="
+                            "Named custom provider declares api_mode="
                             "anthropic_messages but the anthropic SDK is not "
-                            "installed — falling back to OpenAI-wire.",
-                            provider,
+                            "installed — falling back to OpenAI-wire."
                         )
                         # Fallback went OpenAI-wire after all — redo the query
                         # extraction against the rewritten /v1 URL.
@@ -5687,9 +5666,7 @@ def resolve_provider_client(
                     client = _wrap_if_needed(client, final_model, raw_base_for_wrap, custom_key)
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
-            logger.warning(
-                "resolve_provider_client: named custom provider %r has no base_url",
-                provider)
+            logger.warning("resolve_provider_client: named custom provider has no base_url")
             return None, None
     except ImportError:
         pass
@@ -5736,7 +5713,7 @@ def resolve_provider_client(
             resolve_external_process_provider_credentials,
         )
     except ImportError:
-        logger.debug("youtab_agent_cli.auth not available for provider %s", provider)
+        logger.debug("youtab_agent_cli.auth not available for provider")
         return None, None
 
     pconfig = PROVIDER_REGISTRY.get(provider)
@@ -5745,7 +5722,7 @@ def resolve_provider_client(
         # so the first occurrence surfaces but repeated retries stay silent.
         if provider not in _LOGGED_UNKNOWN_PROVIDER_KEYS:
             _LOGGED_UNKNOWN_PROVIDER_KEYS.add(provider)
-            logger.debug("resolve_provider_client: unknown provider %r", provider)
+            logger.debug("resolve_provider_client: unknown provider")
         return None, None
 
     if pconfig.auth_type == "api_key":
@@ -5766,12 +5743,7 @@ def resolve_provider_client(
         if explicit_api_key:
             api_key = explicit_api_key.strip() or api_key
         if not api_key:
-            tried_sources = list(pconfig.api_key_env_vars)
-            if provider == "copilot":
-                tried_sources.append("gh auth token")
-            logger.debug("resolve_provider_client: provider %s has no API "
-                         "key configured (tried: %s)",
-                         provider, ", ".join(tried_sources))
+            logger.debug("resolve_provider_client: provider has no API key configured")
             return None, None
 
         raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
@@ -5790,7 +5762,7 @@ def resolve_provider_client(
 
             if is_native_gemini_base_url(base_url):
                 client = GeminiNativeClient(api_key=api_key, base_url=base_url)
-                logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+                logger.debug("resolve_provider_client: client configured")
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
 
@@ -5836,10 +5808,7 @@ def resolve_provider_client(
             try:
                 from youtab_agent_cli.models import _should_use_copilot_responses_api
                 if _should_use_copilot_responses_api(final_model):
-                    logger.debug(
-                        "resolve_provider_client: copilot model %s needs "
-                        "Responses API — wrapping with CodexAuxiliaryClient",
-                        final_model)
+                    logger.debug("resolve_provider_client: copilot model needs Responses API")
                     client = CodexAuxiliaryClient(client, final_model)
             except ImportError:
                 pass
@@ -5852,7 +5821,7 @@ def resolve_provider_client(
         # land on the right transport without needing per-provider branches.
         client = _wrap_if_needed(client, final_model, raw_base_url, api_key)
 
-        logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+        logger.debug("resolve_provider_client: client configured")
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -5889,13 +5858,12 @@ def resolve_provider_client(
                 command=command,
                 args=args,
             )
-            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            logger.debug("resolve_provider_client: client configured")
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
         if provider not in _LOGGED_UNSUPPORTED_EXTPROC_KEYS:
             _LOGGED_UNSUPPORTED_EXTPROC_KEYS.add(provider)
-            logger.debug("resolve_provider_client: external-process provider %s not "
-                         "directly supported", provider)
+            logger.debug("resolve_provider_client: external-process provider not directly supported")
         return None, None
 
     elif pconfig.auth_type == "vertex":
@@ -5930,7 +5898,7 @@ def resolve_provider_client(
             logger.warning("resolve_provider_client: cannot create Vertex "
                            "client: %s", exc)
             return None, None
-        logger.debug("resolve_provider_client: vertex (%s)", final_model)
+        logger.debug("resolve_provider_client: vertex")
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -5970,12 +5938,10 @@ def resolve_provider_client(
                 real_client, final_model, api_key="aws-sdk",
                 base_url=base_url,
             )
-            logger.debug("resolve_provider_client: bedrock anthropic (%s, %s)",
-                         final_model, region)
+            logger.debug("resolve_provider_client: bedrock anthropic")
         else:
             client = BedrockAuxiliaryClient(region, final_model)
-            logger.debug("resolve_provider_client: bedrock converse (%s, %s)",
-                         final_model, region)
+            logger.debug("resolve_provider_client: bedrock converse")
 
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
@@ -5991,8 +5957,7 @@ def resolve_provider_client(
         # Other OAuth providers not directly supported
         if provider not in _LOGGED_UNSUPPORTED_OAUTH_KEYS:
             _LOGGED_UNSUPPORTED_OAUTH_KEYS.add(provider)
-            logger.debug("resolve_provider_client: OAuth provider %s not "
-                         "directly supported, try 'auto'", provider)
+            logger.debug("resolve_provider_client: OAuth provider not directly supported, try 'auto'")
         return None, None
 
     # Demoted from logger.warning to debug; dedup keyed on (auth_type,
@@ -6001,8 +5966,7 @@ def resolve_provider_client(
     _auth_dedup_key = (pconfig.auth_type, provider)
     if _auth_dedup_key not in _LOGGED_UNHANDLED_AUTHTYPE_KEYS:
         _LOGGED_UNHANDLED_AUTHTYPE_KEYS.add(_auth_dedup_key)
-        logger.debug("resolve_provider_client: unhandled auth_type %s for %s",
-                     pconfig.auth_type, provider)
+        logger.debug("resolve_provider_client: unhandled auth_type")
     return None, None
 
 
@@ -6263,10 +6227,7 @@ def resolve_vision_provider_client(
                     main_provider, vision_model
                 )
                 if sync_client is not None:
-                    logger.info(
-                        "Vision auto-detect: using main provider %s (%s)",
-                        main_provider, default_model or resolved_model or main_model,
-                    )
+                    logger.info("Vision auto-detect: using main provider")
                     return _finalize(main_provider, sync_client, default_model)
             elif main_provider in _PROVIDERS_WITHOUT_VISION:
                 # Kimi Coding Plan's /coding endpoint (Anthropic Messages wire)
@@ -6487,7 +6448,7 @@ def _runtime_cache_discriminator(field: str, value: Any) -> Any:
     if field == "api_key" and callable(value):
         return _CallableCacheDiscriminator(value)
     if field == "api_key" and isinstance(value, str) and value:
-        digest = hashlib.blake2b(value.encode("utf-8"), digest_size=16).digest()
+        digest = credential_cache_digest(value, purpose=b"aux-client")[:16]
         return ("api-key-digest", digest)
     return value
 
@@ -7396,11 +7357,7 @@ def _build_call_kwargs(
         for _t in tools:
             _tname = (_t.get("function") or {}).get("name", "")
             if _tname and _tname in _seen:
-                logger.warning(
-                    "_build_call_kwargs: duplicate tool name '%s' removed "
-                    "(provider=%s model=%s)",
-                    _tname, provider, model,
-                )
+                logger.warning("_build_call_kwargs: duplicate tool name removed")
                 continue
             if _tname:
                 _seen.add(_tname)
@@ -8138,9 +8095,7 @@ def call_llm(
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
     if task:
-        logger.info("Auxiliary %s: using %s (%s)%s",
-                     task, resolved_provider or "auto", final_model or "default",
-                     f" at {_base_info}" if _base_info and "openrouter" not in _base_info else "")
+        logger.info("Auxiliary request started")
 
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish
@@ -8991,11 +8946,7 @@ async def async_call_llm(
             healed_model = _refresh_youtab_recommended_model(
                 vision=(task == "vision"), stale_model=kwargs.get("model"))
             if healed_model and healed_model != kwargs.get("model"):
-                logger.warning(
-                    "Auxiliary %s (async): model %r no longer in Youtab catalog; "
-                    "retrying with refreshed recommendation %r",
-                    task or "call", kwargs.get("model"), healed_model,
-                )
+                logger.warning("Auxiliary async model no longer in Youtab catalog; retrying")
                 kwargs["model"] = healed_model
                 try:
                     return _validate_llm_response(

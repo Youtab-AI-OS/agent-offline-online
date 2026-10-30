@@ -533,11 +533,15 @@ class _LineClient:
 
     async def fetch_content(self, message_id: str) -> bytes:
         """Download an inbound media message's binary content."""
+        if not isinstance(message_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", message_id):
+            raise ValueError("Invalid LINE message ID")
         import aiohttp
-        url = LINE_CONTENT_URL_FMT.format(message_id=message_id)
+        url = LINE_CONTENT_URL_FMT.format(message_id=_urlquote(message_id, safe=""))
         timeout = aiohttp.ClientTimeout(total=30.0)
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-            async with session.get(url, headers={"Authorization": f"Bearer {self._token}"}) as resp:
+            async with session.get(url, headers={"Authorization": f"Bearer {self._token}"}, allow_redirects=False) as resp:
+                if 300 <= resp.status < 400:
+                    raise RuntimeError("LINE content redirect rejected")
                 if resp.status >= 400:
                     raise RuntimeError(f"LINE content {resp.status}")
                 return await resp.read()

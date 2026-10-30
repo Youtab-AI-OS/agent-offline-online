@@ -382,11 +382,9 @@ def test_turn_diagnostics_omit_user_content_without_changing_messages(
     ]
     assert len(turn_records) == 1
     diagnostic = turn_records[0].getMessage()
-    for metadata in (
-        "session=sess-1", f"turn={agent._current_turn_id}",
-        "model=test/model", "provider=openrouter", "platform=cli", "history=1",
-    ):
-        assert metadata in diagnostic
+    assert diagnostic == "conversation turn: started"
+    assert "sess-1" not in caplog.text
+    assert "test/model" not in caplog.text
     assert ctx.user_message == user_message
     assert ctx.messages == history + [{"role": "user", "content": user_message}]
     assert history == [{"role": "assistant", "content": "previous answer"}]

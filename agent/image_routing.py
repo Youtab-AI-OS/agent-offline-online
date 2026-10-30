@@ -438,7 +438,7 @@ def _lookup_supports_vision(
         from agent.models_dev import get_model_capabilities
         caps = get_model_capabilities(provider, model)
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("image_routing: caps lookup failed for %s:%s — %s", provider, model, exc)
+        logger.debug("image_routing: caps lookup failed (%s)", type(exc).__name__)
     if caps is not None:
         return bool(caps.supports_vision)
 
@@ -454,10 +454,8 @@ def _lookup_supports_vision(
                 return ollama_vision
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug(
-                "image_routing: ollama vision probe failed for %s:%s — %s",
-                provider,
-                model,
-                exc,
+                "image_routing: ollama vision probe failed (%s)",
+                type(exc).__name__,
             )
     return None
 

@@ -17,7 +17,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) {
     expect(path.dirname(root)).toBe(path.resolve(os.tmpdir()))
     expect(path.basename(root).startsWith('youtab-sync-service-')).toBe(true)
-    await fs.rm(root, { recursive: true, force: true })
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
   }
 })
 

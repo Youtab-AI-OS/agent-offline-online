@@ -9,8 +9,8 @@
     "voice",
     "messaging"
   ],
-  "uv_lock_sha256": "cf3baa17708efe18f883c4a998e1362f15dc984abddd394a1ddf48fd453d91f4",
-  "requirements_sha256": "7d1a30e53148ba132ec4a119630ca952c594cdc2daae3c8e762b702935947340",
+  "uv_lock_sha256": "a50167d6d4fb28d37849fa9489f4f2f3b0a915b26d296b8f7d0d217acb495788",
+  "requirements_sha256": "5ca58828a4e02e82c48a4cc093de30866ae0e5e4b4f1d1e8be1dbae3f2bbdc40",
   "wheel_count": 132,
   "files": [
     {
@@ -24,9 +24,9 @@
       "sha256": "f349ba8f4b75cb25c99c5c2d84e997e485204d2902a9597802b0371f09331fb8"
     },
     {
-      "name": "aiohttp-3.14.3-cp311-cp311-win_amd64.whl",
-      "size": 481069,
-      "sha256": "e1e74298bab6ee0d6e749ed4fd1901c7e604bdda32c03d787a2cc71c46d0433d"
+      "name": "aiohttp-3.14.4-cp311-cp311-win_amd64.whl",
+      "size": 512755,
+      "sha256": "2efbdb87e79d596325c4eefaef0f4495d701145e882351310ebc538e854dc7a3"
     },
     {
       "name": "aiosignal-1.4.0-py3-none-any.whl",
@@ -59,14 +59,14 @@
       "sha256": "ea1480b7a8d5405cb5f382b344731bf125fd2c1c6fae3964f6c48595628387ff"
     },
     {
-      "name": "brotlicffi-1.2.0.1-cp38-abi3-win_amd64.whl",
-      "size": 379026,
-      "sha256": "da2e82a08e7778b8bc539d27ca03cdd684113e81394bfaaad8d0dfc6a17ddede"
+      "name": "brotlicffi-1.2.1.0-cp39-abi3-win_amd64.whl",
+      "size": 380083,
+      "sha256": "00a6e8df24c2f48744bbdca8694a2b50bb26d1d0b6360c3a7c5caeaf4ad83373"
     },
     {
-      "name": "certifi-2026.5.20-py3-none-any.whl",
-      "size": 134134,
-      "sha256": "3c52e209ba0a4ad7aebe60436a4ab349c39e1e602e8c134221e546902ad25897"
+      "name": "certifi-2026.10.18-py3-none-any.whl",
+      "size": 134093,
+      "sha256": "73191c47aaa79da394e8fee2dbc2ec827432cab56311122c9e47abf79e390f62"
     },
     {
       "name": "cffi-2.0.0-cp311-cp311-win_amd64.whl",
@@ -139,9 +139,9 @@
       "sha256": "79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7"
     },
     {
-      "name": "filelock-3.24.3-py3-none-any.whl",
-      "size": 24331,
-      "sha256": "426e9a4660391f7f8a810d71b0555bce9008b0a1cc342ab1f6947d37639e002d"
+      "name": "filelock-4.2.4-py3-none-any.whl",
+      "size": 162475,
+      "sha256": "301241438c57936ef93f4243a94f2559022268bfcf9b375a9a72eb0f8db8358e"
     },
     {
       "name": "fire-0.7.1-py3-none-any.whl",
@@ -339,9 +339,9 @@
       "sha256": "a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189"
     },
     {
-      "name": "pillow-12.3.0-cp311-cp311-win_amd64.whl",
-      "size": 7233653,
-      "sha256": "8e95e1385e4998ae9694eeaa4730ba5457ff61185b3a55e2e7bea0880aef452a"
+      "name": "pillow-13.0.0-cp311-cp311-win_amd64.whl",
+      "size": 7278471,
+      "sha256": "d7710eb676e9bb68965cb045be0d333b4c0d7f9dfbaa7fbf121385b1588683d3"
     },
     {
       "name": "portalocker-3.2.0-py3-none-any.whl",
@@ -664,9 +664,9 @@
       "sha256": "27ccee0071a0e75d22cb35849b1db43f2ecd3e161041ac1ee9d2352ddf72f065"
     },
     {
-      "name": "yarl-1.22.0-cp311-cp311-win_amd64.whl",
-      "size": 86858,
-      "sha256": "078278b9b0b11568937d9509b589ee83ef98ed6d561dfe2020e24a9fd08eaa2b"
+      "name": "yarl-1.25.1-cp311-cp311-win_amd64.whl",
+      "size": 102894,
+      "sha256": "d7306dee25b8a0e737363f347362b875094b4dc4e367311470656ae420fdbf8e"
     },
     {
       "name": "youtube_transcript_api-1.2.4-py3-none-any.whl",

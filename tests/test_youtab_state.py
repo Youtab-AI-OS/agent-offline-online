@@ -561,6 +561,7 @@ class TestFTS5Search:
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""
         from youtab_state import SessionDB
+        from youtab_state_common import MAX_FTS5_QUERY_CHARS
         s = SessionDB._sanitize_fts5_query
         assert s('hello world') == 'hello world'
         assert '+' not in s('C++')
@@ -578,6 +579,8 @@ class TestFTS5Search:
         assert ':' not in s('TODO: fix')
         assert s('TODO: fix').split() == ['TODO', 'fix']
         assert ':' not in s('error:timeout')
+        assert s('my-app.config') == '"my-app.config"'
+        assert s('x' * 10000 + '.') == 'x' * MAX_FTS5_QUERY_CHARS
 
 
 

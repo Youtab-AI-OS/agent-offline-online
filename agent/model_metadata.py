@@ -5,7 +5,6 @@ and run_agent.py for pre-flight context checks.
 """
 
 import base64
-import hashlib
 import ipaddress
 import json
 import logging
@@ -21,7 +20,7 @@ import yaml
 if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
     import requests
 
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, credential_cache_digest
 
 from youtab_constants import OPENROUTER_MODELS_URL
 
@@ -714,15 +713,15 @@ def _reconcile_local_cached_context_length(
     if live_ctx and live_ctx > 0 and live_ctx != cached:
         if live_ctx < MINIMUM_CONTEXT_LENGTH:
             logger.info(
-                "Live local probe for %s@%s reports %s (< minimum %s); "
+                "Live local probe reports %s (< minimum %s); "
                 "invalidating stale cache — agent init should reject",
-                model, base_url, f"{live_ctx:,}", f"{MINIMUM_CONTEXT_LENGTH:,}",
+                f"{live_ctx:,}", f"{MINIMUM_CONTEXT_LENGTH:,}",
             )
             _invalidate_cached_context_length(model, base_url)
             return live_ctx
         logger.info(
-            "Reconciling stale local cache entry %s@%s: %s -> %s (live probe)",
-            model, base_url, f"{cached:,}", f"{live_ctx:,}",
+            "Reconciling stale local cache entry: %s -> %s (live probe)",
+            f"{cached:,}", f"{live_ctx:,}",
         )
         _invalidate_cached_context_length(model, base_url)
         _maybe_cache_local_context_length(model, base_url, live_ctx)
@@ -1201,7 +1200,7 @@ def fetch_endpoint_model_metadata(
             last_error = exc
 
     if last_error:
-        logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
+        logger.debug("Failed to fetch model metadata (%s)", type(last_error).__name__)
     _endpoint_model_metadata_cache[normalized] = {}
     _endpoint_model_metadata_cache_time[normalized] = time.time()
     return {}
@@ -1276,9 +1275,9 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             yaml.dump({"context_lengths": cache}, f, default_flow_style=False)
-        logger.info("Cached context length %s -> %s tokens", key, f"{length:,}")
+        logger.info("Cached context length")
     except Exception as e:
-        logger.debug("Failed to save context length cache: %s", e)
+        logger.debug("Failed to save context length cache (%s)", type(e).__name__)
 
 
 def get_cached_context_length(model: str, base_url: str) -> Optional[int]:
@@ -1326,7 +1325,7 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
         with open(path, "w", encoding="utf-8") as f:
             yaml.dump({"context_lengths": cache}, f, default_flow_style=False)
     except Exception as e:
-        logger.debug("Failed to invalidate context length cache entry %s: %s", key, e)
+        logger.debug("Failed to invalidate context length cache entry (%s)", type(e).__name__)
 
 
 def get_next_probe_tier(current_length: int) -> Optional[int]:
@@ -2037,8 +2036,8 @@ _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 
 
 def _codex_oauth_token_fingerprint(access_token: str) -> str:
-    """Return a non-secret cache key for a Codex OAuth access token."""
-    return hashlib.sha256(access_token.encode("utf-8")).hexdigest()[:16]
+    """Return a process-local cache key for a Codex OAuth access token."""
+    return credential_cache_digest(access_token, purpose=b"codex-context").hex()[:32]
 
 
 def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
@@ -2395,9 +2394,9 @@ def get_model_context_length(
             # Invalidate stale 32k cache entries for Kimi-family models.
             if cached <= 32768 and _model_name_suggests_kimi(model):
                 logger.info(
-                    "Dropping stale Kimi cache entry %s@%s -> %s (OpenRouter underreport); "
+                    "Dropping stale Kimi cache entry (%s tokens, OpenRouter underreport); "
                     "re-resolving via hardcoded defaults",
-                    model, base_url, f"{cached:,}",
+                    f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
             # Invalidate stale ≤204,800 cache entries for MiniMax-M3.  Pre-catalog
@@ -2408,9 +2407,9 @@ def get_model_context_length(
             # and fall through to the hardcoded default.
             elif cached <= 204_800 and _model_name_suggests_minimax_m3(model):
                 logger.info(
-                    "Dropping stale MiniMax-M3 cache entry %s@%s -> %s (pre-catalog value); "
+                    "Dropping stale MiniMax-M3 cache entry (%s tokens, pre-catalog value); "
                     "re-resolving via hardcoded defaults",
-                    model, base_url, f"{cached:,}",
+                    f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
             # Invalidate stale ≤256,000 cache entries for Grok-4.3.  The
@@ -2421,9 +2420,9 @@ def get_model_context_length(
             # leftover — drop it and fall through to the hardcoded default.
             elif cached <= 256_000 and _model_name_suggests_grok_4_3(model):
                 logger.info(
-                    "Dropping stale Grok-4.3 cache entry %s@%s -> %s (pre-catalog value); "
+                    "Dropping stale Grok-4.3 cache entry (%s tokens, pre-catalog value); "
                     "re-resolving via hardcoded defaults",
-                    model, base_url, f"{cached:,}",
+                    f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
             # Youtab Portal: the portal /v1/models endpoint is authoritative.
@@ -2435,10 +2434,7 @@ def get_model_context_length(
             # The in-memory 300s endpoint metadata cache makes the per-call
             # cost amortise to ~0 within a process.
             elif _infer_provider_from_url(base_url) == "youtab":
-                logger.debug(
-                    "Bypassing persistent cache for %s@%s (Youtab portal authoritative)",
-                    model, base_url,
-                )
+                logger.debug("Bypassing persistent cache (Youtab portal authoritative)")
                 # Fall through; step 5b reconciles and overwrites if portal responds.
             # Invalidate stale Bedrock entries seeded before the Claude 4.6+
             # long-context table was corrected to 1M. The static table is a
@@ -2452,10 +2448,8 @@ def get_model_context_length(
                     bedrock_ctx = get_bedrock_context_length(model)
                     if cached < bedrock_ctx:
                         logger.info(
-                            "Dropping stale Bedrock cache entry %s@%s -> %s; "
+                            "Dropping stale Bedrock cache entry (%s tokens); "
                             "using static Bedrock table value %s",
-                            model,
-                            base_url,
                             f"{cached:,}",
                             f"{bedrock_ctx:,}",
                         )
@@ -2558,10 +2552,10 @@ def get_model_context_length(
                 return ctx
             # 3. Probe-down fallback after endpoint-specific detection failed
             logger.info(
-                "Could not detect context length for model %r at %s — "
+                "Could not detect context length — "
                 "defaulting to %s tokens (probe-down). Set model.context_length "
                 "in config.yaml to override.",
-                model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
+                f"{DEFAULT_FALLBACK_CONTEXT:,}",
             )
             # 3b. Before falling back to the hard 256K default, consult the
             # hardcoded catalog as a last resort.  A proxied/custom Anthropic

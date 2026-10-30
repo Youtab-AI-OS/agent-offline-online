@@ -1326,7 +1326,7 @@ class AIAgent:
             url = str(base_url).lower()
         else:
             url = getattr(self, "_base_url_lower", "") or ""
-        return "openai.azure.com" in url
+        return base_url_host_matches(url, "openai.azure.com")
 
     def _is_github_copilot_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
@@ -1481,8 +1481,8 @@ class AIAgent:
     def _is_copilot_url(self) -> bool:
         """Return True when the base URL targets GitHub Copilot or GitHub Models."""
         return (
-            "api.githubcopilot.com" in self._base_url_lower
-            or "models.github.ai" in self._base_url_lower
+            base_url_host_matches(self._base_url_lower, "api.githubcopilot.com")
+            or base_url_host_matches(self._base_url_lower, "models.github.ai")
         )
 
     def _anthropic_prompt_cache_policy(
@@ -4388,18 +4388,8 @@ class AIAgent:
         """Build a valid Responses `function_call.id` (must start with `fc_`)."""
         return _codex_derive_responses_function_call_id(call_id, response_item_id)
 
-    def _thread_identity(self) -> str:
-        thread = threading.current_thread()
-        return f"{thread.name}:{thread.ident}"
-
     def _client_log_context(self) -> str:
-        provider = getattr(self, "provider", "unknown")
-        base_url = getattr(self, "base_url", "unknown")
-        model = getattr(self, "model", "unknown")
-        return (
-            f"thread={self._thread_identity()} provider={provider} "
-            f"base_url={base_url} model={model}"
-        )
+        return "client lifecycle"
 
     def _openai_client_lock(self) -> threading.RLock:
         lock = getattr(self, "_client_lock", None)
@@ -4530,21 +4520,9 @@ class AIAgent:
         force_closed = self._force_close_tcp_sockets(client)
         try:
             client.close()
-            logger.info(
-                "OpenAI client closed (%s, shared=%s, tcp_force_closed=%d) %s",
-                reason,
-                shared,
-                force_closed,
-                self._client_log_context(),
-            )
-        except Exception as exc:
-            logger.debug(
-                "OpenAI client close failed (%s, shared=%s) %s error=%s",
-                reason,
-                shared,
-                self._client_log_context(),
-                exc,
-            )
+            logger.info("OpenAI client closed (shared=%s, tcp_force_closed=%d)", shared, force_closed)
+        except Exception:
+            logger.debug("OpenAI client close failed (shared=%s)", shared)
 
     def _retire_shared_openai_client(self, client: Any, *, reason: str) -> None:
         """Ownership-safe retirement of a replaced shared OpenAI client.
@@ -4572,33 +4550,17 @@ class AIAgent:
             return
         try:
             shutdown_count = self._force_close_tcp_sockets(client)
-            logger.info(
-                "Shared OpenAI client retired (%s, tcp_shutdown=%d, "
-                "fd_release=deferred_to_gc) %s",
-                reason,
-                shutdown_count,
-                self._client_log_context(),
-            )
-        except Exception as exc:
-            logger.debug(
-                "Shared OpenAI client retire failed (%s) %s error=%s",
-                reason,
-                self._client_log_context(),
-                exc,
-            )
+            logger.info("Shared OpenAI client retired (tcp_shutdown=%d, fd_release=deferred_to_gc)", shutdown_count)
+        except Exception:
+            logger.debug("Shared OpenAI client retire failed")
 
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
             try:
                 new_client = self._create_openai_client(self._client_kwargs, reason=reason, shared=True)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to rebuild shared OpenAI client (%s) %s error=%s",
-                    reason,
-                    self._client_log_context(),
-                    exc,
-                )
+            except Exception:
+                logger.warning("Failed to rebuild shared OpenAI client")
                 return False
             self.client = new_client
         # #70773: never hard-close the replaced shared client from here — the
@@ -4621,20 +4583,11 @@ class AIAgent:
                     self._client_kwargs, reason=reason, shared=True
                 )
             except Exception as exc:
-                logger.warning(
-                    "Failed to recreate closed OpenAI client (%s) %s error=%s",
-                    reason,
-                    self._client_log_context(),
-                    exc,
-                )
+                logger.warning("Failed to recreate closed OpenAI client")
                 raise RuntimeError("Failed to recreate closed OpenAI client") from exc
             self.client = new_client
 
-        logger.warning(
-            "Detected closed shared OpenAI client; recreated before use (%s) %s",
-            reason,
-            self._client_log_context(),
-        )
+        logger.warning("Detected closed shared OpenAI client; recreated before use")
         self._close_openai_client(old_client, reason=f"replace:{reason}", shared=True)
         return new_client
 
@@ -4845,11 +4798,9 @@ class AIAgent:
             # cannot be mistaken for a successful abort in the logs.
             _log = logger.warning if shutdown_count == 0 else logger.info
             _log(
-                "OpenAI client aborted (%s, shared=False, tcp_force_closed=%d, "
-                "deferred_close=stranger_thread) %s%s",
-                reason,
+                "OpenAI client aborted (shared=False, tcp_force_closed=%d, "
+                "deferred_close=stranger_thread)%s",
                 shutdown_count,
-                self._client_log_context(),
                 (
                     " — no sockets found; in-flight request may keep running "
                     "until the provider finishes"
@@ -4857,13 +4808,8 @@ class AIAgent:
                     else ""
                 ),
             )
-        except Exception as exc:
-            logger.debug(
-                "OpenAI client abort failed (%s, shared=False) %s error=%s",
-                reason,
-                self._client_log_context(),
-                exc,
-            )
+        except Exception:
+            logger.debug("OpenAI client abort failed (shared=False)")
 
     def _create_request_anthropic_client(self, *, reason: str) -> Any:
         """Build a request-local Anthropic client for one in-flight call.
@@ -5011,18 +4957,16 @@ class AIAgent:
                 singleton_now = resolve_xai_oauth_runtime_credentials(
                     refresh_if_expiring=False,
                 )
-        except Exception as exc:
-            logger.debug("%s singleton read failed: %s", self.provider, exc)
+        except Exception:
+            logger.debug("Credential singleton read failed")
             return False
 
         singleton_key = str(singleton_now.get("api_key") or "").strip()
         active_key = str(self.api_key or "").strip()
         if singleton_key and active_key and singleton_key != active_key:
             logger.debug(
-                "%s singleton tokens differ from the active api_key; "
-                "skipping singleton force-refresh to avoid silent account swap. "
-                "Reactive credential rotation should go through the pool.",
-                self.provider,
+                "Singleton tokens differ from active api_key; skipping force-refresh "
+                "to avoid silent account swap. Reactive rotation should go through the pool."
             )
             return False
 
@@ -5035,8 +4979,8 @@ class AIAgent:
                 from youtab_agent_cli.auth import resolve_xai_oauth_runtime_credentials
 
                 creds = resolve_xai_oauth_runtime_credentials(force_refresh=force)
-        except Exception as exc:
-            logger.debug("%s credential refresh failed: %s", self.provider, exc)
+        except Exception:
+            logger.debug("Credential refresh failed")
             return False
 
         api_key = creds.get("api_key")
@@ -5188,7 +5132,7 @@ class AIAgent:
         # Azure endpoints use static API keys — OAuth token rotation doesn't apply.
         # Refreshing would pick up ~/.claude/.credentials.json OAuth token and break auth.
         _base = getattr(self, "_anthropic_base_url", "") or ""
-        if "azure.com" in _base:
+        if base_url_host_matches(_base, "azure.com"):
             return False
 
         try:
@@ -6190,11 +6134,7 @@ class AIAgent:
             # we've already learned this lesson in-session, short-circuit to
             # a text summary so we don't burn a round-trip relearning it.
             if not self._provider_supports_vision_tool_messages():
-                logger.debug(
-                    "Tool %s: provider %s does not accept list-type tool "
-                    "content — sending text summary",
-                    tool_name, getattr(self, "provider", ""),
-                )
+                logger.debug("Provider does not accept list-type tool content — sending text summary")
                 return _multimodal_text_summary(result)
             key = (
                 (getattr(self, "provider", "") or "").strip().lower(),
@@ -6202,11 +6142,7 @@ class AIAgent:
             )
             no_list = getattr(self, "_no_list_tool_content_models", None)
             if no_list and key in no_list:
-                logger.debug(
-                    "Tool %s: model %s/%s known to reject list-type tool "
-                    "content this session — sending text summary",
-                    tool_name, key[0], key[1],
-                )
+                logger.debug("Model known to reject list-type tool content this session — sending text summary")
                 return _multimodal_text_summary(result)
             return content
 
@@ -6222,13 +6158,7 @@ class AIAgent:
                 "text_summary": summary,
             })
 
-        logger.warning(
-            "Tool %s returned image content for non-vision model %s/%s; "
-            "falling back to text summary",
-            tool_name,
-            self.provider,
-            self.model,
-        )
+        logger.warning("Tool returned image content for non-vision model; falling back to text summary")
         return summary
 
     def _try_shrink_image_parts_in_messages(
@@ -6357,10 +6287,10 @@ class AIAgent:
             or "minimax" in base
             or "opencode.ai/zen/" in base
             or "bigmodel.cn" in base
-            or "xiaomimimo.com" in base
+            or base_url_host_matches(base, "xiaomimimo.com")
             # Vertex AI OpenAI-compat endpoint — Gemini model ids keep dots
             # (e.g. google/gemini-3.5-flash); the hyphenated form is wrong.
-            or "aiplatform.googleapis.com" in base
+            or base_url_host_matches(base, "aiplatform.googleapis.com")
             # AWS Bedrock runtime endpoints — defense-in-depth when
             # ``provider`` is unset but ``base_url`` still names Bedrock.
             or "bedrock-runtime." in base

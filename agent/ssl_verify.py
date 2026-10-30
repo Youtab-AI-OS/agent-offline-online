@@ -34,14 +34,14 @@ def resolve_httpx_verify(
        ``CURL_CA_BUNDLE`` env vars
     4. ``True`` (httpx/certifi default)
 
-    ``base_url`` is used only for the insecure-mode warning message.
+    ``base_url`` is accepted for callers but never logged: custom URLs may
+    contain credentials in their userinfo, path, or query.
     """
     if _coerce_insecure(ssl_verify):
         logger.warning(
-            "TLS certificate verification DISABLED (ssl_verify: false) for %s — "
+            "TLS certificate verification DISABLED (ssl_verify: false) for a provider endpoint — "
             "this is intended for local development only and is unsafe on any "
             "network you do not fully control.",
-            base_url or "a custom provider endpoint",
         )
         return False
 

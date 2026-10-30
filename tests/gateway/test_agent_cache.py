@@ -58,7 +58,9 @@ class TestAgentConfigSignature:
         assert rt1["api_key"][:8] == rt2["api_key"][:8]
         sig1 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt1, ["youtab-telegram"], "")
         sig2 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt2, ["youtab-telegram"], "")
+        assert sig1 == GatewayRunner._agent_config_signature("gpt-5.3-codex", rt1, ["youtab-telegram"], "")
         assert sig1 != sig2
+        assert rt1["api_key"] not in sig1
 
     def test_provider_change_different_signature(self):
         from gateway.run import GatewayRunner

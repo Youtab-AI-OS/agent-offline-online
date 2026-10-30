@@ -18,6 +18,7 @@ the async helper, never in the synchroyoutab probe.
 from __future__ import annotations
 
 import json
+import contextlib
 import os
 import signal
 import subprocess
@@ -240,12 +241,17 @@ def spawn_async_diagnostic(
         "echo '=== end ==='"
     )
 
+    fd = None
     try:
         # Open the log file in append mode and let the subprocess inherit.
         # We use os.O_APPEND so concurrent diagnostics from rapid signals
         # don't trample each other.
-        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.fchmod(fd, 0o600)
     except OSError:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
         return None
 
     try:
