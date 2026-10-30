@@ -573,9 +573,9 @@ def _write_through_provider_state_to_global_root(
         )
     except Exception as exc:  # pragma: no cover - best effort
         logger.debug(
-            "%s pool refresh: write-through to global root failed: %s",
+            "%s pool refresh: write-through to global root failed (%s)",
             provider_id,
-            exc,
+            type(exc).__name__,
         )
 
 
@@ -772,7 +772,7 @@ class CredentialPool:
                 self._persist()
                 return updated
         except Exception as exc:
-            logger.debug("Failed to sync from credentials file: %s", exc)
+            logger.debug("Failed to sync from credentials file (%s)", type(exc).__name__)
         return entry
 
     def _sync_codex_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
@@ -836,7 +836,7 @@ class CredentialPool:
                 self._persist()
                 return updated
         except Exception as exc:
-            logger.debug("Failed to sync Codex entry from auth.json: %s", exc)
+            logger.debug("Failed to sync Codex entry from auth.json (%s)", type(exc).__name__)
         return entry
 
     def _sync_xai_oauth_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
@@ -894,7 +894,7 @@ class CredentialPool:
                 self._persist()
                 return updated
         except Exception as exc:
-            logger.debug("Failed to sync xAI OAuth entry from auth.json: %s", exc)
+            logger.debug("Failed to sync xAI OAuth entry from auth.json (%s)", type(exc).__name__)
         return entry
 
     def _sync_xai_oauth_entry_from_pool_store(
@@ -933,7 +933,7 @@ class CredentialPool:
                 self._replace_entry(entry, stored)
                 return stored
         except Exception as exc:
-            logger.debug("Failed to sync xAI OAuth entry from credential pool: %s", exc)
+            logger.debug("Failed to sync xAI OAuth entry from credential pool (%s)", type(exc).__name__)
         return entry
 
     def _sync_youtab_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
@@ -1005,7 +1005,7 @@ class CredentialPool:
                 self._persist()
                 return updated
         except Exception as exc:
-            logger.debug("Failed to sync Youtab entry from auth.json: %s", exc)
+            logger.debug("Failed to sync Youtab entry from auth.json (%s)", type(exc).__name__)
         return entry
 
     def _sync_device_code_entry_to_auth_store(self, entry: PooledCredential) -> None:
@@ -1121,7 +1121,7 @@ class CredentialPool:
                         _wt_provider_id, state
                     )
         except Exception as exc:
-            logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
+            logger.debug("Failed to sync %s pool entry back to auth store (%s)", self.provider, type(exc).__name__)
 
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
@@ -1210,7 +1210,7 @@ class CredentialPool:
                             refreshed["expires_at_ms"],
                         )
                     except Exception as wexc:
-                        logger.debug("Failed to write refreshed token to credentials file: %s", wexc)
+                        logger.debug("Failed to write refreshed token to credentials file (%s)", type(wexc).__name__)
             elif self.provider == "openai-codex":
                 # Adopt fresher tokens from auth.json before spending the
                 # refresh_token — single-use tokens consumed by another Youtab
@@ -1259,7 +1259,7 @@ class CredentialPool:
             else:
                 return entry
         except Exception as exc:
-            logger.debug("Credential refresh failed for %s/%s: %s", self.provider, entry.id, exc)
+            logger.debug("Credential refresh failed for %s (%s)", self.provider, type(exc).__name__)
             # For anthropic claude_code entries: the refresh token may have been
             # consumed by another process. Check if ~/.claude/.credentials.json
             # has a newer token pair and retry once.
@@ -1292,10 +1292,10 @@ class CredentialPool:
                                 refreshed["expires_at_ms"],
                             )
                         except Exception as wexc:
-                            logger.debug("Failed to write refreshed token to credentials file (retry path): %s", wexc)
+                            logger.debug("Failed to write refreshed token to credentials file on retry (%s)", type(wexc).__name__)
                         return updated
                     except Exception as retry_exc:
-                        logger.debug("Retry refresh also failed: %s", retry_exc)
+                        logger.debug("Retry refresh also failed (%s)", type(retry_exc).__name__)
                 elif not self._entry_needs_refresh(synced):
                     # Credentials file had a valid (non-expired) token — use it directly
                     logger.debug("Credentials file has valid token, using without refresh")
@@ -1428,7 +1428,7 @@ class CredentialPool:
                                         _save_auth_store(auth_store)
                     except Exception as clear_exc:
                         logger.debug(
-                            "Failed to clear terminal Codex OAuth state: %s", clear_exc
+                            "Failed to clear terminal Codex OAuth state (%s)", type(clear_exc).__name__
                         )
                     removed_ids = [
                         item.id for item in self._entries
@@ -1491,7 +1491,7 @@ class CredentialPool:
                                 _save_provider_state(auth_store, "youtab", state)
                                 _save_auth_store(auth_store)
                     except Exception as clear_exc:
-                        logger.debug("Failed to clear terminal Youtab OAuth state: %s", clear_exc)
+                        logger.debug("Failed to clear terminal Youtab OAuth state (%s)", type(clear_exc).__name__)
 
                     singleton_sources = {
                         auth_mod.YOUTAB_DEVICE_CODE_SOURCE,
@@ -1674,9 +1674,8 @@ class CredentialPool:
                         _label = entry.label or entry.id[:8]
                         logger.warning(
                             "credential pool: pruning DEAD manual entry %s "
-                            "(reason=%s, age=%.1fh) — re-add via `youtab auth add %s`",
+                            "(age=%.1fh) — re-add via `youtab auth add %s`",
                             _label,
-                            entry.last_error_reason or "unknown",
                             (now - dead_at) / 3600.0,
                             self.provider,
                         )
@@ -1907,9 +1906,9 @@ class CredentialPool:
             )
             if updated_entry.last_status == STATUS_DEAD:
                 logger.warning(
-                    "credential pool: marking %s DEAD (status=%s, reason=%s) — "
+                    "credential pool: marking %s DEAD (status=%s) — "
                     "permanently failed, will NOT re-enter rotation until re-auth",
-                    _label, status_code, updated_entry.last_error_reason or "unknown",
+                    _label, status_code,
                 )
             else:
                 logger.info(
@@ -2358,7 +2357,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                         },
                     )
         except Exception as exc:
-            logger.debug("Copilot token seed failed: %s", exc)
+            logger.debug("Copilot token seed failed (%s)", type(exc).__name__)
 
     elif provider == "qwen-oauth":
         # Qwen OAuth tokens live in ~/.qwen/oauth_creds.json, written by
@@ -2388,7 +2387,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                         },
                     )
         except Exception as exc:
-            logger.debug("Qwen OAuth token seed failed: %s", exc)
+            logger.debug("Qwen OAuth token seed failed (%s)", type(exc).__name__)
 
     elif provider == "minimax-oauth":
         # MiniMax OAuth tokens live in ~/.youtab-agent-runtime/auth.json providers.minimax-oauth.
@@ -2430,7 +2429,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                         },
                     )
         except Exception as exc:
-            logger.debug("MiniMax OAuth token seed failed: %s", exc)
+            logger.debug("MiniMax OAuth token seed failed (%s)", type(exc).__name__)
 
     elif provider == "openai-codex":
         # Respect user suppression — `youtab auth remove openai-codex` marks

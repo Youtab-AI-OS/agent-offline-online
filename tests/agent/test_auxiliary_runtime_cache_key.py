@@ -146,6 +146,12 @@ def test_string_api_keys_are_not_retained_in_cache_key_repr():
         main_runtime={**_runtime("same"), "api_key": second_secret},
     )
 
+    assert first == aux._client_cache_key(
+        "auto",
+        async_mode=False,
+        api_key=first_secret,
+        main_runtime={**_runtime("same"), "api_key": first_secret},
+    )
     assert first != second
     rendered = repr((first, second))
     assert first_secret not in rendered

@@ -43,7 +43,6 @@ Payment / credit exhaustion fallback:
 import contextlib
 import contextvars
 import functools
-import hashlib
 import inspect
 import json
 import logging
@@ -863,14 +862,14 @@ def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
     try:
         pool = load_pool(provider)
     except Exception as exc:
-        logger.debug("Auxiliary client: could not load pool for %s: %s", provider, exc)
+        logger.debug("Auxiliary client: could not load pool for %s (%s)", provider, type(exc).__name__)
         return False, None
     if not pool or not pool.has_credentials():
         return False, None
     try:
         return True, pool.select()
     except Exception as exc:
-        logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc)
+        logger.debug("Auxiliary client: could not select pool entry for %s (%s)", provider, type(exc).__name__)
         return True, None
 
 
@@ -879,7 +878,7 @@ def _peek_pool_entry(provider: str) -> Optional[Any]:
     try:
         pool = load_pool(provider)
     except Exception as exc:
-        logger.debug("Auxiliary client: could not load pool for %s (peek): %s", provider, exc)
+        logger.debug("Auxiliary client: could not load pool for %s (peek, %s)", provider, type(exc).__name__)
         return None
     if not pool or not pool.has_credentials():
         return None
@@ -893,7 +892,7 @@ def _peek_pool_entry(provider: str) -> Optional[Any]:
         if callable(peek_fn):
             return peek_fn()
     except Exception as exc:
-        logger.debug("Auxiliary client: could not peek pool entry for %s: %s", provider, exc)
+        logger.debug("Auxiliary client: could not peek pool entry for %s (%s)", provider, type(exc).__name__)
     return None
 
 
@@ -1774,9 +1773,8 @@ def _maybe_wrap_anthropic(
         from agent.anthropic_adapter import build_anthropic_client
     except ImportError:
         logger.warning(
-            "Endpoint %s speaks Anthropic Messages but the anthropic SDK is "
+            "Endpoint speaks Anthropic Messages but the anthropic SDK is "
             "not installed — falling back to OpenAI-wire (will likely 404).",
-            base_url,
         )
         return client_obj
 
@@ -1784,15 +1782,15 @@ def _maybe_wrap_anthropic(
         real_client = build_anthropic_client(api_key, base_url)
     except Exception as exc:
         logger.warning(
-            "Failed to build Anthropic client for %s (%s) — falling back to "
-            "OpenAI-wire client.", base_url, exc,
+            "Failed to build Anthropic client (%s) — falling back to "
+            "OpenAI-wire client.", type(exc).__name__,
         )
         return client_obj
 
     logger.debug(
         "Auxiliary transport: wrapping client in AnthropicAuxiliaryClient "
-        "(model=%s, base_url=%s, api_mode=%s)",
-        model, base_url[:60] if base_url else "", api_mode or "auto-detected",
+        "(model=%s, api_mode=%s)",
+        model, api_mode or "auto-detected",
     )
     return AnthropicAuxiliaryClient(
         real_client, model, api_key, base_url, is_oauth=False,
@@ -1833,7 +1831,7 @@ def _read_youtab_auth() -> Optional[dict]:
             return None
         return provider
     except Exception as exc:
-        logger.debug("Could not read Youtab auth: %s", exc)
+        logger.debug("Could not read Youtab auth (%s)", type(exc).__name__)
         return None
 
 
@@ -1869,7 +1867,7 @@ def _resolve_youtab_pool_runtime_api(*, force_refresh: bool = False) -> Optional
 
         pool = load_pool("youtab")
     except Exception as exc:
-        logger.debug("Auxiliary Youtab pool credential resolution failed: %s", exc)
+        logger.debug("Auxiliary Youtab pool credential resolution failed (%s)", type(exc).__name__)
         return None
 
     if not pool or not pool.has_credentials():
@@ -1878,7 +1876,7 @@ def _resolve_youtab_pool_runtime_api(*, force_refresh: bool = False) -> Optional
     try:
         entry = pool.select()
     except Exception as exc:
-        logger.debug("Auxiliary Youtab pool selection failed: %s", exc)
+        logger.debug("Auxiliary Youtab pool selection failed (%s)", type(exc).__name__)
         return None
 
     if entry is None:
@@ -1893,7 +1891,7 @@ def _resolve_youtab_pool_runtime_api(*, force_refresh: bool = False) -> Optional
         try:
             refreshed = pool.try_refresh_current()
         except Exception as exc:
-            logger.debug("Auxiliary Youtab pool refresh failed: %s", exc)
+            logger.debug("Auxiliary Youtab pool refresh failed (%s)", type(exc).__name__)
             refreshed = None
         if refreshed is None:
             return None
@@ -1943,7 +1941,7 @@ def _resolve_youtab_runtime_api(*, force_refresh: bool = False) -> Optional[tupl
             force_refresh=force_refresh,
         )
     except Exception as exc:
-        logger.debug("Auxiliary Youtab runtime credential resolution failed: %s", exc)
+        logger.debug("Auxiliary Youtab runtime credential resolution failed (%s)", type(exc).__name__)
         return None
 
     api_key = str(creds.get("api_key") or "").strip()
@@ -1991,14 +1989,14 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
                 if api_key and base_url:
                     return api_key, base_url
     except Exception as exc:
-        logger.debug("Auxiliary xAI OAuth pool credential resolution failed: %s", exc)
+        logger.debug("Auxiliary xAI OAuth pool credential resolution failed (%s)", type(exc).__name__)
 
     try:
         from youtab_agent_cli.auth import resolve_xai_oauth_runtime_credentials
 
         creds = resolve_xai_oauth_runtime_credentials()
     except Exception as exc:
-        logger.debug("Auxiliary xAI OAuth runtime credential resolution failed: %s", exc)
+        logger.debug("Auxiliary xAI OAuth runtime credential resolution failed (%s)", type(exc).__name__)
         return None
 
     api_key = str(creds.get("api_key") or "").strip()
@@ -2047,7 +2045,7 @@ def _read_codex_access_token() -> Optional[str]:
 
         return access_token.strip()
     except Exception as exc:
-        logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
+        logger.debug("Could not read Codex auth for auxiliary client (%s)", type(exc).__name__)
         return None
 
 
@@ -2833,7 +2831,7 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
 
         runtime = resolve_runtime_provider(requested="custom")
     except Exception as exc:
-        logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
+        logger.debug("Auxiliary client: custom runtime resolution failed (%s)", type(exc).__name__)
         runtime = None
 
     if not isinstance(runtime, dict):
@@ -3924,7 +3922,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     try:
         pool = load_pool(normalized)
     except Exception as load_exc:
-        logger.debug("Auxiliary client: could not load pool for %s recovery: %s", normalized, load_exc)
+        logger.debug("Auxiliary client: could not load pool for %s recovery (%s)", normalized, type(load_exc).__name__)
         return False
     if not pool or not pool.has_credentials():
         return False
@@ -4191,7 +4189,7 @@ def _refresh_provider_credentials(provider: str) -> bool:
             _evict_cached_clients(normalized)
             return True
     except Exception as exc:
-        logger.debug("Auxiliary provider credential refresh failed for %s: %s", normalized, exc)
+        logger.debug("Auxiliary provider credential refresh failed for %s (%s)", normalized, type(exc).__name__)
         return False
     return False
 
@@ -5376,9 +5374,8 @@ def resolve_provider_client(
         if _needs_codex_wrap(client_obj, base_url_str, final_model_str):
             logger.debug(
                 "resolve_provider_client: wrapping client in CodexAuxiliaryClient "
-                "(api_mode=%s, model=%s, base_url=%s)",
-                api_mode or "auto-detected", final_model_str,
-                base_url_str[:60] if base_url_str else "")
+                "(api_mode=%s, model=%s)",
+                api_mode or "auto-detected", final_model_str)
             return CodexAuxiliaryClient(client_obj, final_model_str)
         # Anthropic-wire endpoints: rewrap plain OpenAI clients so
         # chat.completions.create() is translated to /v1/messages.
@@ -6487,7 +6484,9 @@ def _runtime_cache_discriminator(field: str, value: Any) -> Any:
     if field == "api_key" and callable(value):
         return _CallableCacheDiscriminator(value)
     if field == "api_key" and isinstance(value, str) and value:
-        digest = hashlib.blake2b(value.encode("utf-8"), digest_size=16).digest()
+        from agent.credential_cache import credential_cache_digest
+
+        digest = credential_cache_digest(value, purpose=b"aux-client")[:16]
         return ("api-key-digest", digest)
     return value
 
@@ -8138,9 +8137,8 @@ def call_llm(
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
     if task:
-        logger.info("Auxiliary %s: using %s (%s)%s",
-                     task, resolved_provider or "auto", final_model or "default",
-                     f" at {_base_info}" if _base_info and "openrouter" not in _base_info else "")
+        logger.info("Auxiliary %s: using %s (%s)",
+                    task, resolved_provider or "auto", final_model or "default")
 
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish

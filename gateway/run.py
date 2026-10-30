@@ -21548,9 +21548,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Fingerprint the FULL credential string instead of using a short
         # prefix. OAuth/JWT-style tokens frequently share a common prefix
         # (e.g. "eyJhbGci"), which can cause false cache hits across auth
-        # switches if only the first few characters are considered.
+        # switches if only the first few characters are considered. The
+        # process-local HMAC key keeps cache signatures resistant to offline
+        # guessing if a cache key is exposed.
+        from agent.credential_cache import credential_cache_digest
+
         _api_key = str(runtime.get("api_key", "") or "")
-        _api_key_fingerprint = hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else ""
+        _api_key_fingerprint = (
+            credential_cache_digest(_api_key, purpose=b"gateway-agent").hex()
+            if _api_key else ""
+        )
 
         _cache_keys_sorted = sorted((cache_keys or {}).items())
 

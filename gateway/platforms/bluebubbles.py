@@ -838,6 +838,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             not isinstance(att_guid, str)
             or not att_guid
             or len(att_guid) > _ATTACHMENT_GUID_MAX_CHARS
+            or re.fullmatch(r"[A-Za-z0-9_-]+", att_guid) is None
         ):
             logger.warning("[bluebubbles] ignored invalid attachment GUID")
             return None

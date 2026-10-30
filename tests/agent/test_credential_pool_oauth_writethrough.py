@@ -17,6 +17,7 @@ mocking the save boundary, so they exercise the actual atomic write path.
 """
 
 import json
+import logging
 import threading
 
 import pytest
@@ -50,6 +51,27 @@ def _entry(provider: str, *, id: str, access_token: str, refresh_token: str):
         access_token=access_token,
         refresh_token=refresh_token,
     )
+
+
+def test_refresh_failure_does_not_log_credential_or_exception(monkeypatch, caplog):
+    secret = "synthetic-token-for-log-test"
+    entry = _entry(
+        "youtab", id=f"credential-{secret}",
+        access_token=secret, refresh_token=secret,
+    )
+    pool = CredentialPool("youtab", [entry])
+    monkeypatch.setattr(pool, "_sync_youtab_entry_from_auth_store", lambda item: item)
+    monkeypatch.setattr(pool, "_mark_exhausted", lambda *_args: None)
+    monkeypatch.setattr(A, "_is_terminal_youtab_refresh_error", lambda _exc: False)
+
+    def fail_refresh(**_kwargs):
+        raise RuntimeError(f"OAuth response echoed {secret}")
+
+    monkeypatch.setattr(A, "resolve_youtab_runtime_credentials", fail_refresh)
+    with caplog.at_level(logging.DEBUG, logger="agent.credential_pool"):
+        assert pool._refresh_entry_impl(entry, force=True) is None
+    assert "Credential refresh failed" in caplog.text
+    assert secret not in caplog.text
 
 
 @pytest.fixture

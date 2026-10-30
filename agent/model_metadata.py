@@ -5,7 +5,6 @@ and run_agent.py for pre-flight context checks.
 """
 
 import base64
-import hashlib
 import ipaddress
 import json
 import logging
@@ -2037,8 +2036,10 @@ _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 
 
 def _codex_oauth_token_fingerprint(access_token: str) -> str:
-    """Return a non-secret cache key for a Codex OAuth access token."""
-    return hashlib.sha256(access_token.encode("utf-8")).hexdigest()[:16]
+    """Return a process-local cache key for a Codex OAuth access token."""
+    from agent.credential_cache import credential_cache_digest
+
+    return credential_cache_digest(access_token, purpose=b"codex-context").hex()[:32]
 
 
 def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
