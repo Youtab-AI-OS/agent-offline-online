@@ -16,3 +16,7 @@ docker/entrypoint.sh text eol=lf
 # looked at the same commit. It is also mounted verbatim into an nginx 1.18
 # container by the TLS gate, and runs on a Linux host.
 infrastructure/nginx/*.conf text eol=lf
+
+# The reviewed Windows wheelhouse hashes these exact text-file bytes.
+uv.lock text eol=lf
+config/windows-customer-requirements.txt text eol=lf
