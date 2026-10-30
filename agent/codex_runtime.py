@@ -1330,15 +1330,13 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             _httpx.ReadTimeout,
             _httpx.ConnectError,
             ConnectionError,
-        ) as exc:
+        ):
             if attempt < max_stream_retries:
                 logger.debug(
                     "Codex Responses stream connect failed (attempt %s/%s); "
-                    "retrying. %s error=%s",
+                    "retrying",
                     attempt + 1,
                     max_stream_retries + 1,
-                    agent._client_log_context(),
-                    exc,
                 )
                 continue
             raise
@@ -1371,13 +1369,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 if not agent._interrupt_requested:
                     for _ignored in event_stream:
                         pass
-            except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
+            except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError):
                 if attempt < max_stream_retries:
                     logger.debug(
                         "Codex Responses stream transport failed mid-iteration "
-                        "(attempt %s/%s); retrying. %s error=%s",
+                        "(attempt %s/%s); retrying",
                         attempt + 1, max_stream_retries + 1,
-                        agent._client_log_context(), exc,
                     )
                     continue
                 raise
@@ -1388,11 +1385,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
             if final.status in {"incomplete", "failed"}:
                 logger.warning(
-                    "Codex Responses stream terminal status=%s "
-                    "(incomplete_details=%s, error=%s, streamed_chars=%d). %s",
-                    final.status, final.incomplete_details, final.error,
+                    "Codex Responses stream ended incomplete or failed (streamed_chars=%d)",
                     sum(len(p) for p in agent._codex_streamed_text_parts),
-                    agent._client_log_context(),
                 )
 
             return final
