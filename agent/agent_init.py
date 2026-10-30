@@ -1476,9 +1476,11 @@ def init_agent(
     # is canonical — the snapshot is only useful for external tooling that
     # reads the JSON files directly.  See run_agent._save_session_log.
     agent._session_json_enabled = False
+    _init_cfg: Dict[str, Any] = {}
     try:
         from youtab_agent_cli.config import load_config_readonly as _load_sess_cfg
-        _sess_cfg = (_load_sess_cfg().get("sessions") or {})
+        _init_cfg = _load_sess_cfg()
+        _sess_cfg = (_init_cfg.get("sessions") or {})
         agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
     except Exception:
         pass
@@ -1503,8 +1505,9 @@ def init_agent(
     # from the persisted string and is used only to place an early cache marker.
     agent._cached_system_prompt_static: Optional[str] = None
     
-    from youtab_agent_cli.config import load_config
-    agent._project_backup_required = load_config().get("project_task_backup", {}).get("required") is True
+    agent._project_backup_required = cfg_get(
+        _init_cfg, "project_task_backup", "required", default=False
+    ) is True
 
     # Filesystem checkpoint manager (transparent — not a tool)
     from tools.checkpoint_manager import CheckpointManager
