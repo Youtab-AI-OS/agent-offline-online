@@ -9,8 +9,8 @@
     "voice",
     "messaging"
   ],
-  "uv_lock_sha256": "cf3baa17708efe18f883c4a998e1362f15dc984abddd394a1ddf48fd453d91f4",
-  "requirements_sha256": "7d1a30e53148ba132ec4a119630ca952c594cdc2daae3c8e762b702935947340",
+  "uv_lock_sha256": "e4e039fb1501934c6fd6fa03c0c92447574a28804683cfd21bcfa52ab792a14f",
+  "requirements_sha256": "4b6eab221ccecdc86a88f02c27df6e75ad91c77c06f954fcce96aef0f2a513d0",
   "wheel_count": 132,
   "files": [
     {
@@ -59,14 +59,14 @@
       "sha256": "ea1480b7a8d5405cb5f382b344731bf125fd2c1c6fae3964f6c48595628387ff"
     },
     {
-      "name": "brotlicffi-1.2.0.1-cp38-abi3-win_amd64.whl",
-      "size": 379026,
-      "sha256": "da2e82a08e7778b8bc539d27ca03cdd684113e81394bfaaad8d0dfc6a17ddede"
+      "name": "brotlicffi-1.2.1.0-cp39-abi3-win_amd64.whl",
+      "size": 380083,
+      "sha256": "00a6e8df24c2f48744bbdca8694a2b50bb26d1d0b6360c3a7c5caeaf4ad83373"
     },
     {
-      "name": "certifi-2026.5.20-py3-none-any.whl",
-      "size": 134134,
-      "sha256": "3c52e209ba0a4ad7aebe60436a4ab349c39e1e602e8c134221e546902ad25897"
+      "name": "certifi-2026.10.18-py3-none-any.whl",
+      "size": 134093,
+      "sha256": "73191c47aaa79da394e8fee2dbc2ec827432cab56311122c9e47abf79e390f62"
     },
     {
       "name": "cffi-2.0.0-cp311-cp311-win_amd64.whl",
@@ -339,9 +339,9 @@
       "sha256": "a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189"
     },
     {
-      "name": "pillow-12.3.0-cp311-cp311-win_amd64.whl",
-      "size": 7233653,
-      "sha256": "8e95e1385e4998ae9694eeaa4730ba5457ff61185b3a55e2e7bea0880aef452a"
+      "name": "pillow-13.0.0-cp311-cp311-win_amd64.whl",
+      "size": 7278471,
+      "sha256": "d7710eb676e9bb68965cb045be0d333b4c0d7f9dfbaa7fbf121385b1588683d3"
     },
     {
       "name": "portalocker-3.2.0-py3-none-any.whl",
