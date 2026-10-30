@@ -8327,10 +8327,12 @@ def _probe_custom_endpoint(base_url: str, api_key: str = "") -> Dict[str, Any]:
     from urllib.parse import urlsplit
     from agent.process_bootstrap import _get_proxy_for_base_url
     from agent.auxiliary_client import _validate_proxy_env_urls
-    from youtab_agent_cli.endpoint_url import normalize_model_endpoint_url
+    from youtab_agent_cli.endpoint_url import normalize_model_endpoint_url, is_safe_model_endpoint_url
 
     try:
         base_url = normalize_model_endpoint_url(base_url)
+        if not is_safe_model_endpoint_url(base_url):
+            return {"ok": False, "reachable": False, "message": "Enter a public HTTP or HTTPS endpoint URL.", "models": []}
         parsed = urlsplit(base_url)
         valid = (
             parsed.scheme in {"http", "https"} and parsed.hostname

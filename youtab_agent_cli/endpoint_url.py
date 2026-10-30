@@ -1,7 +1,37 @@
 """Conservative URL handling for the existing custom model endpoint seam."""
 
 import ipaddress
+import socket
 from urllib.parse import urlsplit
+
+
+def is_safe_model_endpoint_url(value: str) -> bool:
+    """Return True when the endpoint host does not resolve to local/special IPs."""
+    parsed = urlsplit(value)
+    host = parsed.hostname
+    if not host:
+        return False
+    try:
+        addrinfo = socket.getaddrinfo(host, parsed.port, type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    for item in addrinfo:
+        sockaddr = item[4]
+        ip_text = sockaddr[0]
+        try:
+            ip_obj = ipaddress.ip_address(ip_text)
+        except ValueError:
+            return False
+        if (
+            ip_obj.is_private
+            or ip_obj.is_loopback
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_unspecified
+            or ip_obj.is_reserved
+        ):
+            return False
+    return True
 
 
 def normalize_model_endpoint_url(value: str) -> str:
