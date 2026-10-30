@@ -1040,6 +1040,15 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
                 gr.GatewayRunner._launch_detached_restart_command(cls._fake_self())
             )
 
+    @staticmethod
+    def _is_watcher_spawn(argv):
+        return (
+            isinstance(argv, (list, tuple))
+            and len(argv) >= 5
+            and argv[1] == "-c"
+            and list(argv[-2:]) == ["gateway", "restart"]
+        )
+
     def test_outer_watcher_retries_without_breakaway_on_oserror(self, monkeypatch):
         import gateway.run as gr
         from youtab_agent_cli._subprocess_compat import (
@@ -1052,8 +1061,11 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         monkeypatch.setattr(gr, "_resolve_youtab_bin", lambda: ["youtab"])
 
         calls = []
+        real_popen = subprocess.Popen
 
         def fake_popen(argv, **kwargs):
+            if not self._is_watcher_spawn(argv):
+                return real_popen(argv, **kwargs)
             calls.append((argv, kwargs))
             if len(calls) == 1:
                 raise OSError(5, "Access is denied")  # ERROR_ACCESS_DENIED
@@ -1113,10 +1125,15 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         monkeypatch.setattr(gr, "_resolve_youtab_bin", lambda: ["youtab"])
 
         calls = []
-        monkeypatch.setattr(
-            "subprocess.Popen",
-            lambda argv, **kwargs: calls.append((argv, kwargs)) or MagicMock(),
-        )
+        real_popen = subprocess.Popen
+
+        def fake_popen(argv, **kwargs):
+            if not self._is_watcher_spawn(argv):
+                return real_popen(argv, **kwargs)
+            calls.append((argv, kwargs))
+            return MagicMock()
+
+        monkeypatch.setattr("subprocess.Popen", fake_popen)
         warn = MagicMock()
         monkeypatch.setattr(gr.logger, "warning", warn)
 
@@ -1134,8 +1151,11 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         monkeypatch.setattr(gr, "_resolve_youtab_bin", lambda: ["youtab"])
 
         calls = []
+        real_popen = subprocess.Popen
 
         def always_fail(argv, **kwargs):
+            if not self._is_watcher_spawn(argv):
+                return real_popen(argv, **kwargs)
             calls.append((argv, kwargs))
             raise OSError(5, "Access is denied")
 
