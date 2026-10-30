@@ -8,8 +8,6 @@
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
-from types import SimpleNamespace
 
 import pytest
 
