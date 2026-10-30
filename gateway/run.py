@@ -4118,10 +4118,7 @@ class TurnRunner:
                 session_key=ctx.session_key,
                 user_config=ctx.user_config,
             )
-            logger.debug(
-                "run_agent resolved: model=%s provider=%s session=%s",
-                model, runtime_kwargs.get("provider"), ctx.session_key or "",
-            )
+            logger.debug("run_agent resolved session runtime")
         except Exception as exc:
             return {
                 "final_response": f"⚠️ Provider authentication failed: {exc}",

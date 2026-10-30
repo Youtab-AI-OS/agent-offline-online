@@ -11,6 +11,7 @@ Coverage levels:
 """
 
 import time
+import logging
 
 import pytest
 import yaml
@@ -933,6 +934,18 @@ class TestContextLengthCache:
             with open(cache_file, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
             assert len(data["context_lengths"]) == 1
+
+    def test_cache_log_does_not_expose_custom_endpoint(self, tmp_path, caplog):
+        cache_file = tmp_path / "cache.yaml"
+        model = "private-model-name"
+        endpoint = "https://private.example/path?token=synthetic-secret"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            with caplog.at_level(logging.INFO, logger="agent.model_metadata"):
+                save_context_length(model, endpoint, 32768)
+            assert get_cached_context_length(model, endpoint) == 32768
+        assert model not in caplog.text
+        assert endpoint not in caplog.text
+        assert "synthetic-secret" not in caplog.text
 
 
 

@@ -234,24 +234,16 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     if runtime_ctx >= MINIMUM_CONTEXT_LENGTH:
         return None
 
-    model = getattr(agent, "model", "") or "the selected model"
-    base_url = getattr(agent, "base_url", "") or "unknown base URL"
-    provider = getattr(agent, "provider", "") or "unknown"
     tool_count = len(getattr(agent, "tools", None) or [])
 
     logger.warning(
         "Ollama runtime context too small for Youtab tool use: "
-        "model=%s provider=%s base_url=%s runtime_context=%d "
-        "minimum_context=%d estimated_request_tokens=%d tool_count=%d "
-        "session=%s",
-        model,
-        provider,
-        base_url,
+        "runtime_context=%d "
+        "minimum_context=%d estimated_request_tokens=%d tool_count=%d",
         runtime_ctx,
         MINIMUM_CONTEXT_LENGTH,
         request_tokens,
         tool_count,
-        getattr(agent, "session_id", None) or "none",
     )
 
     return (

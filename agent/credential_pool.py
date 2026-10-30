@@ -1121,7 +1121,7 @@ class CredentialPool:
                         _wt_provider_id, state
                     )
         except Exception as exc:
-            logger.debug("Failed to sync %s pool entry back to auth store (%s)", self.provider, type(exc).__name__)
+            logger.debug("Failed to sync pool entry back to auth store (%s)", type(exc).__name__)
 
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
@@ -1259,7 +1259,7 @@ class CredentialPool:
             else:
                 return entry
         except Exception as exc:
-            logger.debug("Credential refresh failed for %s (%s)", self.provider, type(exc).__name__)
+            logger.debug("Credential refresh failed (%s)", type(exc).__name__)
             # For anthropic claude_code entries: the refresh token may have been
             # consumed by another process. Check if ~/.claude/.credentials.json
             # has a newer token pair and retry once.
@@ -1671,13 +1671,10 @@ class CredentialPool:
                 if _is_manual_source(entry.source):
                     dead_at = entry.last_status_at or 0
                     if dead_at and now - dead_at > DEAD_MANUAL_PRUNE_TTL_SECONDS:
-                        _label = entry.label or entry.id[:8]
                         logger.warning(
-                            "credential pool: pruning DEAD manual entry %s "
-                            "(age=%.1fh) — re-add via `youtab auth add %s`",
-                            _label,
+                            "credential pool: pruning DEAD manual entry "
+                            "(age=%.1fh) — re-add via `youtab auth add`",
                             (now - dead_at) / 3600.0,
-                            self.provider,
                         )
                         # Mark for removal after the loop completes; we can't
                         # mutate self._entries while iterating.
