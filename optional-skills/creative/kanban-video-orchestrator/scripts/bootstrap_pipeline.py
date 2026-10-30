@@ -484,7 +484,7 @@ def main():
     setup = render_setup_sh(plan, brief, team)
 
     Path(args.out).write_text(setup, encoding="utf-8")
-    os.chmod(args.out, 0o755)
+    os.chmod(args.out, 0o700)
     print(f"Wrote {args.out}")
 
     if args.brief_out:
