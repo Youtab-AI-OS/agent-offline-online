@@ -88,13 +88,8 @@ def check_ssl(host, port=443, timeout=10):
             with ctx.wrap_socket(sock, server_hostname=host) as s:
                 cert, cipher, proto = s.getpeercert(), s.cipher(), s.version()
     except ssl.SSLCertVerificationError as e:
-        warning = str(e)
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((host, port), timeout=timeout) as sock:
-            with ctx.wrap_socket(sock, server_hostname=host) as s:
-                cert, cipher, proto = s.getpeercert(), s.cipher(), s.version()
+        return {"host": host, "port": port, "error": "TLS certificate verification failed",
+                "verification_warning": str(e)}
 
     not_after = parse_date(cert.get("notAfter", ""))
     now = datetime.now(timezone.utc)
@@ -273,8 +268,6 @@ def check_available(domain):
     ssl_up = False
     try:
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
         with socket.create_connection((domain, 443), timeout=3) as s:
             with ctx.wrap_socket(s, server_hostname=domain):
                 ssl_up = True

@@ -5598,10 +5598,9 @@ def resolve_provider_client(
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(
-                    "resolve_provider_client: named custom provider %r has no resolvable "
+                    "resolve_provider_client: named custom provider has no resolvable "
                     "api_key — request will be sent with placeholder no-key-required "
-                    "and will 401 on auth-required endpoints",
-                    custom_entry.get("name") or provider,
+                    "and will 401 on auth-required endpoints"
                 )
             # An explicit per-task api_mode override (from _resolve_task_provider_model)
             # wins; otherwise fall back to what the provider entry declared.
@@ -5630,9 +5629,7 @@ def resolve_provider_client(
                 _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
                 if _headers2:
                     _extra2["default_headers"] = _headers2
-                logger.debug(
-                    "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
-                    provider, final_model, entry_api_mode or "chat_completions")
+                logger.debug("resolve_provider_client: named custom provider configured")
                 # anthropic_messages: route through the Anthropic Messages API
                 # via AnthropicAuxiliaryClient. Mirrors the anonymous-custom
                 # branch in _try_custom_endpoint(). See #15033.
@@ -5642,10 +5639,9 @@ def resolve_provider_client(
                         real_client = build_anthropic_client(custom_key, custom_base)
                     except ImportError:
                         logger.warning(
-                            "Named custom provider %r declares api_mode="
+                            "Named custom provider declares api_mode="
                             "anthropic_messages but the anthropic SDK is not "
-                            "installed — falling back to OpenAI-wire.",
-                            provider,
+                            "installed — falling back to OpenAI-wire."
                         )
                         # Fallback went OpenAI-wire after all — redo the query
                         # extraction against the rewritten /v1 URL.
@@ -5677,9 +5673,7 @@ def resolve_provider_client(
                     client = _wrap_if_needed(client, final_model, raw_base_for_wrap, custom_key)
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
-            logger.warning(
-                "resolve_provider_client: named custom provider %r has no base_url",
-                provider)
+            logger.warning("resolve_provider_client: named custom provider has no base_url")
             return None, None
     except ImportError:
         pass
@@ -5726,7 +5720,7 @@ def resolve_provider_client(
             resolve_external_process_provider_credentials,
         )
     except ImportError:
-        logger.debug("youtab_agent_cli.auth not available for provider %s", provider)
+        logger.debug("youtab_agent_cli.auth not available for provider")
         return None, None
 
     pconfig = PROVIDER_REGISTRY.get(provider)
@@ -5735,7 +5729,7 @@ def resolve_provider_client(
         # so the first occurrence surfaces but repeated retries stay silent.
         if provider not in _LOGGED_UNKNOWN_PROVIDER_KEYS:
             _LOGGED_UNKNOWN_PROVIDER_KEYS.add(provider)
-            logger.debug("resolve_provider_client: unknown provider %r", provider)
+            logger.debug("resolve_provider_client: unknown provider")
         return None, None
 
     if pconfig.auth_type == "api_key":
@@ -5756,12 +5750,7 @@ def resolve_provider_client(
         if explicit_api_key:
             api_key = explicit_api_key.strip() or api_key
         if not api_key:
-            tried_sources = list(pconfig.api_key_env_vars)
-            if provider == "copilot":
-                tried_sources.append("gh auth token")
-            logger.debug("resolve_provider_client: provider %s has no API "
-                         "key configured (tried: %s)",
-                         provider, ", ".join(tried_sources))
+            logger.debug("resolve_provider_client: provider has no API key configured")
             return None, None
 
         raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
@@ -5780,7 +5769,7 @@ def resolve_provider_client(
 
             if is_native_gemini_base_url(base_url):
                 client = GeminiNativeClient(api_key=api_key, base_url=base_url)
-                logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+                logger.debug("resolve_provider_client: client configured")
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
 
@@ -5842,7 +5831,7 @@ def resolve_provider_client(
         # land on the right transport without needing per-provider branches.
         client = _wrap_if_needed(client, final_model, raw_base_url, api_key)
 
-        logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+        logger.debug("resolve_provider_client: client configured")
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -5879,13 +5868,12 @@ def resolve_provider_client(
                 command=command,
                 args=args,
             )
-            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            logger.debug("resolve_provider_client: client configured")
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
         if provider not in _LOGGED_UNSUPPORTED_EXTPROC_KEYS:
             _LOGGED_UNSUPPORTED_EXTPROC_KEYS.add(provider)
-            logger.debug("resolve_provider_client: external-process provider %s not "
-                         "directly supported", provider)
+            logger.debug("resolve_provider_client: external-process provider not directly supported")
         return None, None
 
     elif pconfig.auth_type == "vertex":
@@ -5981,8 +5969,7 @@ def resolve_provider_client(
         # Other OAuth providers not directly supported
         if provider not in _LOGGED_UNSUPPORTED_OAUTH_KEYS:
             _LOGGED_UNSUPPORTED_OAUTH_KEYS.add(provider)
-            logger.debug("resolve_provider_client: OAuth provider %s not "
-                         "directly supported, try 'auto'", provider)
+            logger.debug("resolve_provider_client: OAuth provider not directly supported, try 'auto'")
         return None, None
 
     # Demoted from logger.warning to debug; dedup keyed on (auth_type,
@@ -5991,8 +5978,7 @@ def resolve_provider_client(
     _auth_dedup_key = (pconfig.auth_type, provider)
     if _auth_dedup_key not in _LOGGED_UNHANDLED_AUTHTYPE_KEYS:
         _LOGGED_UNHANDLED_AUTHTYPE_KEYS.add(_auth_dedup_key)
-        logger.debug("resolve_provider_client: unhandled auth_type %s for %s",
-                     pconfig.auth_type, provider)
+        logger.debug("resolve_provider_client: unhandled auth_type")
     return None, None
 
 

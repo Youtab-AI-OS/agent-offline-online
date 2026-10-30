@@ -1,5 +1,6 @@
 """Tests for SSRF protection in url_safety module."""
 
+import logging
 import socket
 from unittest.mock import patch
 
@@ -60,6 +61,13 @@ class TestNormalizeUrlForRequest:
 
 
 class TestIsSafeUrl:
+    def test_blocked_url_is_not_written_to_logs(self, caplog):
+        url = "https://private.example/path?token=synthetic-secret"
+        with _resolves_to("127.0.0.1"), caplog.at_level(logging.WARNING, logger="tools.url_safety"):
+            assert is_safe_url(url) is False
+        assert "private.example" not in caplog.text
+        assert "synthetic-secret" not in caplog.text
+
     def test_public_url_allowed(self):
         with _resolves_to("93.184.216.34"):
             assert is_safe_url("https://example.com/image.png") is True

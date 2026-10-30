@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlsplit
 
 try:
     import yaml
@@ -1568,11 +1569,12 @@ class Migrator:
 
                 # Match by baseUrl first
                 if isinstance(base_url, str):
-                    if "openrouter" in base_url.lower():
+                    host = urlsplit(base_url).hostname or ""
+                    if host == "openrouter.ai" or host.endswith(".openrouter.ai"):
                         env_var = "OPENROUTER_API_KEY"
-                    elif "openai.com" in base_url.lower():
+                    elif host == "openai.com" or host.endswith(".openai.com"):
                         env_var = "OPENAI_API_KEY"
-                    elif "anthropic" in base_url.lower():
+                    elif host == "anthropic.com" or host.endswith(".anthropic.com"):
                         env_var = "ANTHROPIC_API_KEY"
 
                 # Match by api type

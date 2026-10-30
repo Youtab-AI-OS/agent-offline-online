@@ -416,14 +416,14 @@ def is_safe_url(url: str) -> bool:
         hostname = (parsed.hostname or "").strip().lower().rstrip(".")
         scheme = (parsed.scheme or "").strip().lower()
         if scheme not in {"http", "https"}:
-            logger.warning("Blocked request — unsupported URL scheme: %s", scheme or "<empty>")
+            logger.warning("Blocked request — unsupported URL scheme")
             return False
         if not hostname:
             return False
 
         # Block known internal hostnames — ALWAYS, even with toggle on
         if hostname in _BLOCKED_HOSTNAMES:
-            logger.warning("Blocked request to internal hostname: %s", hostname)
+            logger.warning("Blocked request to internal hostname")
             return False
 
         # Check the global toggle AFTER blocking metadata hostnames
@@ -452,13 +452,9 @@ def is_safe_url(url: str) -> bool:
             except ValueError:
                 _is_literal_ip = False
             if not _is_literal_ip and _proxy_is_configured():
-                logger.debug(
-                    "DNS resolution failed for %s — proxy configured, "
-                    "allowing through for proxy-side resolution",
-                    hostname,
-                )
+                logger.debug("DNS resolution failed — delegating to configured proxy")
                 return True
-            logger.warning("Blocked request — DNS resolution failed for: %s", hostname)
+            logger.warning("Blocked request — DNS resolution failed")
             return False
 
         for family, _, _, _, sockaddr in addr_info:
@@ -469,41 +465,29 @@ def is_safe_url(url: str) -> bool:
                 ip = ipaddress.ip_address(ip_str)
             except ValueError:
                 # Still unparseable after scope ID strip — fail closed
-                logger.warning("Blocked request — unparseable IP address %r for hostname %s", sockaddr[0], hostname)
+                logger.warning("Blocked request — unparseable IP address")
                 return False
 
             # Always block cloud metadata IPs and link-local, even with toggle on
             if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):
-                logger.warning(
-                    "Blocked request to cloud metadata address: %s -> %s",
-                    hostname, ip_str,
-                )
+                logger.warning("Blocked request to cloud metadata address")
                 return False
 
             if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
-                logger.warning(
-                    "Blocked request to private/internal address: %s -> %s",
-                    hostname, ip_str,
-                )
+                logger.warning("Blocked request to private/internal address")
                 return False
 
         if allow_all_private:
-            logger.debug(
-                "Allowing private/internal resolution (security.allow_private_urls=true): %s",
-                hostname,
-            )
+            logger.debug("Allowing private/internal resolution by configuration")
         elif allow_private_ip:
-            logger.debug(
-                "Allowing trusted hostname despite private/internal resolution: %s",
-                hostname,
-            )
+            logger.debug("Allowing trusted hostname despite private/internal resolution")
 
         return True
 
-    except Exception as exc:
+    except Exception:
         # Fail closed on unexpected errors — don't let parsing edge cases
         # become SSRF bypass vectors
-        logger.warning("Blocked request — URL safety check error for %s: %s", url, exc)
+        logger.warning("Blocked request — URL safety check error")
         return False
 
 

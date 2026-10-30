@@ -442,7 +442,7 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     if not normalized:
         return False  # No base_url = direct Anthropic API
     normalized = normalized.rstrip("/").lower()
-    if "anthropic.com" in normalized:
+    if base_url_host_matches(normalized, "anthropic.com"):
         return False  # Direct Anthropic API — OAuth applies
     return True  # Any other endpoint is a third-party proxy
 
@@ -597,7 +597,7 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     normalized = normalized.rstrip("/").lower()
     return (
         normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
-        or "azure.com" in normalized
+        or base_url_host_matches(normalized, "azure.com")
         # Palantir Foundry LLM proxy (<org>.palantirfoundry.com/api/v2/llm/proxy/anthropic)
         # rejects x-api-key with 401 and requires Authorization: Bearer.
         # Hostname match (not substring) so e.g. evil.com/palantirfoundry
@@ -611,7 +611,7 @@ def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
     normalized = _normalize_base_url_text(base_url).lower()
     if not normalized:
         return False
-    return "azure.com" in normalized
+    return base_url_host_matches(normalized, "azure.com")
 
 
 def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
