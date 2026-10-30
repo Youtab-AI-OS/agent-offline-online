@@ -4388,18 +4388,8 @@ class AIAgent:
         """Build a valid Responses `function_call.id` (must start with `fc_`)."""
         return _codex_derive_responses_function_call_id(call_id, response_item_id)
 
-    def _thread_identity(self) -> str:
-        thread = threading.current_thread()
-        return f"{thread.name}:{thread.ident}"
-
     def _client_log_context(self) -> str:
-        provider = getattr(self, "provider", "unknown")
-        base_url = getattr(self, "base_url", "unknown")
-        model = getattr(self, "model", "unknown")
-        return (
-            f"thread={self._thread_identity()} provider={provider} "
-            f"base_url={base_url} model={model}"
-        )
+        return "client lifecycle"
 
     def _openai_client_lock(self) -> threading.RLock:
         lock = getattr(self, "_client_lock", None)

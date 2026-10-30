@@ -20,7 +20,7 @@ import yaml
 if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
     import requests
 
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, credential_cache_digest
 
 from youtab_constants import OPENROUTER_MODELS_URL
 
@@ -2037,8 +2037,6 @@ _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 
 def _codex_oauth_token_fingerprint(access_token: str) -> str:
     """Return a process-local cache key for a Codex OAuth access token."""
-    from agent.credential_cache import credential_cache_digest
-
     return credential_cache_digest(access_token, purpose=b"codex-context").hex()[:32]
 
 

@@ -82,6 +82,17 @@ class TestCreateOpenAIClientCallable:
         )
         assert client is not None
 
+    def test_client_diagnostics_omit_endpoint_and_model(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent.__new__(AIAgent)
+        agent.provider = "provider-secret"
+        agent.model = "model-secret"
+        agent.base_url = "https://user:password@example.test/private"
+
+        context = agent._client_log_context()
+        assert context == "client lifecycle"
+
 
 # ---------------------------------------------------------------------------
 # Auxiliary runtime preserves the callable

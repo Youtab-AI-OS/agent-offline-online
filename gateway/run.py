@@ -1659,7 +1659,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Youtab home directory (respects YOUTAB_AGENT_HOME override)
 from youtab_constants import get_youtab_home, get_youtab_home_override
-from utils import atomic_json_write, is_truthy_value
+from utils import atomic_json_write, credential_cache_digest, is_truthy_value
 _youtab_home = get_youtab_home()
 
 # Load environment variables from ~/.youtab-agent-runtime/.env first.
@@ -21545,8 +21545,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # switches if only the first few characters are considered. The
         # process-local HMAC key keeps cache signatures resistant to offline
         # guessing if a cache key is exposed.
-        from agent.credential_cache import credential_cache_digest
-
         _api_key = str(runtime.get("api_key", "") or "")
         _api_key_fingerprint = (
             credential_cache_digest(_api_key, purpose=b"gateway-agent").hex()

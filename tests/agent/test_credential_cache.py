@@ -3,7 +3,7 @@
 import subprocess
 import sys
 
-from agent.credential_cache import credential_cache_digest
+from utils import credential_cache_digest
 
 
 def test_cache_fingerprint_is_stable_and_separates_tokens_and_purposes():
@@ -16,7 +16,7 @@ def test_cache_fingerprint_is_stable_and_separates_tokens_and_purposes():
 
 def test_cache_fingerprint_changes_across_processes():
     code = (
-        "from agent.credential_cache import credential_cache_digest; "
+        "from utils import credential_cache_digest; "
         "print(credential_cache_digest('synthetic-token', "
         "purpose=b'gateway-agent').hex())"
     )
