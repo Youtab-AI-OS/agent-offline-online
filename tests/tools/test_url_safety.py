@@ -298,19 +298,21 @@ class TestGlobalAllowPrivateUrls:
         yield
         _reset_allow_private_cache()
 
-    def test_default_is_false(self, monkeypatch):
+    def test_default_is_false(self, monkeypatch, tmp_path):
         """Toggle defaults to False when no env var or config is set."""
         monkeypatch.delenv("YOUTAB_AGENT_ALLOW_PRIVATE_URLS", raising=False)
-        with patch("youtab_agent_cli.config.read_raw_config", side_effect=Exception("no config")):
-            assert _global_allow_private_urls() is False
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
+        assert _global_allow_private_urls() is False
 
 
-    def test_config_security_string_false_stays_disabled(self, monkeypatch):
+    def test_config_security_string_false_stays_disabled(self, monkeypatch, tmp_path):
         """Quoted false must not opt out of SSRF protection."""
         monkeypatch.delenv("YOUTAB_AGENT_ALLOW_PRIVATE_URLS", raising=False)
-        cfg = {"security": {"allow_private_urls": "false"}}
-        with patch("youtab_agent_cli.config.read_raw_config", return_value=cfg):
-            assert _global_allow_private_urls() is False
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            'security:\n  allow_private_urls: "false"\n', encoding="utf-8"
+        )
+        assert _global_allow_private_urls() is False
 
 
     @pytest.mark.parametrize(
