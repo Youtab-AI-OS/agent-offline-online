@@ -22,6 +22,7 @@ class DomainIntelTlsTests(unittest.TestCase):
                 result = domain_intel.check_ssl("example.invalid")
         self.assertEqual(result["error"], "TLS certificate verification failed")
         create_context.assert_called_once_with()
+        self.assertEqual(context.minimum_version, ssl.TLSVersion.TLSv1_2)
         context.wrap_socket.assert_called_once()
         self.assertNotIn("verify_mode", context.__dict__)
 

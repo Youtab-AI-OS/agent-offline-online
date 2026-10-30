@@ -268,8 +268,7 @@ def check_website_access(url: str, config_path: Optional[Path] = None) -> Option
     for rule in policy.get("rules", []):
         pattern = rule.get("pattern", "")
         if _match_host_against_rule(host, pattern):
-            logger.info("Blocked URL %s — matched rule '%s' from %s",
-                        url, pattern, rule.get("source", "config"))
+            logger.info("Blocked URL by website policy")
             return {
                 "url": url,
                 "host": host,

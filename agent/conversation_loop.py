@@ -2718,17 +2718,7 @@ def run_conversation(
                         continue
 
                     agent._flush_status_buffer()
-                    _refusal_log = (
-                        _refusal_text[:500] + "..."
-                        if len(_refusal_text) > 500
-                        else _refusal_text
-                    )
-                    logger.warning(
-                        "%sModel declined to respond (finish_reason=content_filter). "
-                        "model=%s provider=%s refusal=%s",
-                        agent.log_prefix, agent.model, agent.provider,
-                        _refusal_log or "(no text)",
-                    )
+                    logger.warning("Model declined to respond (finish_reason=content_filter)")
                     agent._emit_status(
                         "⚠️ The model declined to respond to this request (safety refusal)."
                     )
@@ -4054,12 +4044,8 @@ def run_conversation(
                 error_msg = str(api_error).lower()
                 _error_summary = agent._summarize_api_error(api_error)
                 logger.warning(
-                    "API call failed (attempt %s/%s) error_type=%s %s summary=%s",
-                    retry_count,
-                    max_retries,
-                    error_type,
-                    agent._client_log_context(),
-                    _error_summary,
+                    "API call failed (attempt %s/%s) error_type=%s",
+                    retry_count, max_retries, error_type,
                 )
 
                 _provider = getattr(agent, "provider", "unknown")
@@ -5223,11 +5209,7 @@ def run_conversation(
                             force=True,
                         )
 
-                    logger.error(
-                        "%sAPI call failed after %s retries. %s | provider=%s model=%s msgs=%s tokens=~%s",
-                        agent.log_prefix, max_retries, _final_summary,
-                        _provider, _model, len(api_messages), f"{approx_tokens:,}",
-                    )
+                    logger.error("API call failed after %s retries", max_retries)
                     if api_kwargs is not None:
                         agent._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
@@ -5329,13 +5311,8 @@ def run_conversation(
                 else:
                     agent._buffer_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
                 logger.warning(
-                    "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
-                    wait_time,
-                    retry_count,
-                    max_retries,
-                    agent._client_log_context(),
-                    _backoff_policy or "default",
-                    api_error,
+                    "Retrying API call in %ss (attempt %s/%s)",
+                    wait_time, retry_count, max_retries,
                 )
                 # Sleep in small increments so we can respond to interrupts quickly
                 # instead of blocking the entire wait_time in one sleep() call

@@ -496,14 +496,12 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
             # and ValueError (too-large / SSRF redirect) are also terminal.
             if not _is_retryable_download_error(e) or attempt >= max_retries - 1:
                 logger.error(
-                    "Image download failed after %s attempt(s): %s",
-                    attempt + 1,
-                    str(e)[:100],
-                    exc_info=True,
+                    "Image download failed after %s attempt(s) (%s)",
+                    attempt + 1, type(e).__name__,
                 )
                 raise
             wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
-            logger.warning("Image download failed (attempt %s/%s): %s", attempt + 1, max_retries, str(e)[:50])
+            logger.warning("Image download failed (attempt %s/%s)", attempt + 1, max_retries)
             logger.warning("Retrying in %ss...", wait_time)
             await asyncio.sleep(wait_time)
 
@@ -1125,15 +1123,9 @@ async def vision_analyze_tool(
     if not isinstance(user_prompt, str):
         user_prompt = str(user_prompt) if user_prompt is not None else ""
     debug_call_data = {
-        "parameters": {
-            "image_url": image_url,
-            "user_prompt": user_prompt[:200] + "..." if len(user_prompt) > 200 else user_prompt,
-            "model": model
-        },
         "error": None,
         "success": False,
         "analysis_length": 0,
-        "model_used": model,
         "image_size_bytes": 0
     }
     
@@ -1148,8 +1140,7 @@ async def vision_analyze_tool(
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        logger.info("Analyzing image: %s", image_url[:60])
-        logger.info("User prompt: %s", user_prompt[:100])
+        logger.info("Analyzing image")
 
         # Resolve the source to raw bytes through the single resolver (unifies
         # data:/http/file/local/container and enforces terminal-backend
@@ -1322,18 +1313,25 @@ async def vision_analyze_tool(
         return json.dumps(result, indent=2, ensure_ascii=False)
         
     except Exception as e:
-        error_msg = f"Error analyzing image: {str(e)}"
-        logger.error("%s", error_msg, exc_info=True)
-        
-        # Detect vision capability errors — give the model a clear message
-        # so it can inform the user instead of a cryptic API error.
         err_str = str(e).lower()
+        error_msg = "Error analyzing image"
+        if "secret-bearing environment file" in err_str:
+            error_msg = "Image source blocked: secret-bearing environment file"
+        elif "blocked by website policy" in err_str:
+            error_msg = "Image source blocked by website policy"
+        elif "not a recognized image" in err_str:
+            error_msg = "Image source is not a recognized image"
+        elif "too large" in err_str:
+            error_msg = "Image source is too large"
+        logger.error("Image analysis failed (%s)", type(e).__name__)
+
+        # Detect vision capability errors without returning raw provider errors.
         if any(hint in err_str for hint in (
             "402", "insufficient", "payment required", "credits", "billing",
         )):
             analysis = (
                 "Insufficient credits or payment required. Please top up your "
-                f"API provider account and try again. Error: {e}"
+                "API provider account and try again."
             )
         elif any(hint in err_str for hint in (
             "does not support", "not support image",
@@ -1341,20 +1339,19 @@ async def vision_analyze_tool(
             "unrecognized request argument", "image input",
         )):
             analysis = (
-                f"{model} does not support vision or our request was not "
-                f"accepted by the server. Error: {e}"
+                "The model does not support vision or our request was not "
+                "accepted by the server."
             )
         elif "invalid_request" in err_str or "image_url" in err_str:
             analysis = (
                 "The vision API rejected the image. This can happen when the "
                 "image is in an unsupported format, corrupted, or still too "
-                "large after auto-resize. Try a smaller JPEG/PNG and retry. "
-                f"Error: {e}"
+                "large after auto-resize. Try a smaller JPEG/PNG and retry."
             )
         else:
             analysis = (
                 "There was a problem with the request and the image could not "
-                f"be analyzed. Error: {e}"
+                "be analyzed."
             )
         
         # Prepare error response
@@ -1364,7 +1361,7 @@ async def vision_analyze_tool(
             "analysis": analysis,
         }
         
-        debug_call_data["error"] = error_msg
+        debug_call_data["error"] = type(e).__name__
         _debug.log_call("vision_analyze_tool", debug_call_data)
         _debug.save()
         
@@ -1376,10 +1373,8 @@ async def vision_analyze_tool(
             try:
                 temp_image_path.unlink()
                 logger.debug("Cleaned up temporary image file")
-            except Exception as cleanup_error:
-                logger.warning(
-                    "Could not delete temporary file: %s", cleanup_error, exc_info=True
-                )
+            except Exception:
+                logger.warning("Could not delete temporary image file")
 
 
 def check_vision_requirements() -> bool:
@@ -1639,12 +1634,12 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
             last_error = e
             if attempt < max_retries - 1:
                 wait_time = 2 ** (attempt + 1)
-                logger.warning("Video download failed (attempt %s/%s): %s", attempt + 1, max_retries, str(e)[:50])
+                logger.warning("Video download failed (attempt %s/%s)", attempt + 1, max_retries)
                 await asyncio.sleep(wait_time)
             else:
                 logger.error(
-                    "Video download failed after %s attempts: %s",
-                    max_retries, str(e)[:100], exc_info=True,
+                    "Video download failed after %s attempts (%s)",
+                    max_retries, type(e).__name__,
                 )
 
     if last_error is None:
@@ -1663,15 +1658,9 @@ async def video_analyze_tool(
     if not isinstance(user_prompt, str):
         user_prompt = str(user_prompt) if user_prompt is not None else ""
     debug_call_data = {
-        "parameters": {
-            "video_url": video_url,
-            "user_prompt": user_prompt[:200] + "..." if len(user_prompt) > 200 else user_prompt,
-            "model": model,
-        },
         "error": None,
         "success": False,
         "analysis_length": 0,
-        "model_used": model,
         "video_size_bytes": 0,
     }
 
@@ -1683,8 +1672,7 @@ async def video_analyze_tool(
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        logger.info("Analyzing video: %s", video_url[:60])
-        logger.info("User prompt: %s", user_prompt[:100])
+        logger.info("Analyzing video")
 
         # Resolve local path vs remote URL
         resolved_url = video_url
@@ -1695,7 +1683,7 @@ async def video_analyze_tool(
         if local_path.is_file():
             from agent.file_safety import raise_if_read_blocked
             raise_if_read_blocked(str(local_path))
-            logger.info("Using local video file: %s", video_url)
+            logger.info("Using local video file")
             temp_video_path = local_path
             should_cleanup = False
         elif await _validate_image_url_async(video_url):
@@ -1805,16 +1793,17 @@ async def video_analyze_tool(
         return json.dumps(result, indent=2, ensure_ascii=False)
 
     except Exception as e:
-        error_msg = f"Error analyzing video: {str(e)}"
-        logger.error("%s", error_msg, exc_info=True)
-
         err_str = str(e).lower()
+        error_msg = "Error analyzing video"
+        if "secret-bearing environment file" in err_str:
+            error_msg = "Video source blocked: secret-bearing environment file"
+        logger.error("Video analysis failed (%s)", type(e).__name__)
         if any(hint in err_str for hint in (
             "402", "insufficient", "payment required", "credits", "billing",
         )):
             analysis = (
                 "Insufficient credits or payment required. Please top up your "
-                f"API provider account and try again. Error: {e}"
+                "API provider account and try again."
             )
         elif any(hint in err_str for hint in (
             "does not support", "not support video",
@@ -1825,7 +1814,7 @@ async def video_analyze_tool(
             analysis = (
                 f"The model does not support video analysis or the request was "
                 f"rejected. Ensure you're using a video-capable model "
-                f"(e.g. google/gemini-2.5-flash). Error: {e}"
+                "(e.g. google/gemini-2.5-flash)."
             )
         elif any(hint in err_str for hint in (
             "too large", "payload", "413", "content_too_large",
@@ -1833,12 +1822,14 @@ async def video_analyze_tool(
         )):
             analysis = (
                 "The video is too large for the API. Try compressing or trimming "
-                f"the video (max ~50 MB). Error: {e}"
+                "the video (max ~50 MB)."
             )
+        elif "unsupported video format" in err_str:
+            analysis = "Unsupported video format. Use an MP4 video."
         else:
             analysis = (
                 "There was a problem with the request and the video could not "
-                f"be analyzed. Error: {e}"
+                "be analyzed."
             )
 
         result = {
@@ -1847,7 +1838,7 @@ async def video_analyze_tool(
             "analysis": analysis,
         }
 
-        debug_call_data["error"] = error_msg
+        debug_call_data["error"] = type(e).__name__
         _debug.log_call("video_analyze_tool", debug_call_data)
         _debug.save()
 
@@ -1858,10 +1849,8 @@ async def video_analyze_tool(
             try:
                 temp_video_path.unlink()
                 logger.debug("Cleaned up temporary video file")
-            except Exception as cleanup_error:
-                logger.warning(
-                    "Could not delete temporary file: %s", cleanup_error, exc_info=True
-                )
+            except Exception:
+                logger.warning("Could not delete temporary video file")
 
 
 VIDEO_ANALYZE_SCHEMA = {

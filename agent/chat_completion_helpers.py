@@ -1898,11 +1898,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if _existing_pool is not None:
             _pool_provider = (getattr(_existing_pool, "provider", "") or "").strip().lower()
             if _pool_provider and _pool_provider != fb_provider:
-                logger.info(
-                    "Fallback to %s/%s: clearing primary credential pool "
-                    "(pool_provider=%s) to prevent cross-provider contamination",
-                    fb_provider, fb_model, _pool_provider,
-                )
+                logger.info("Fallback: clearing primary credential pool to prevent cross-provider contamination")
                 agent._credential_pool = None
                 agent._credential_pool_entry_id = None
         if getattr(agent, "_credential_pool", None) is None:
