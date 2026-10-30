@@ -1497,17 +1497,21 @@ def test_codex_commentary_emits_before_tool_and_withholds_final_answer(monkeypat
 
 
 
-def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):
+def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path, capsys):
     """Debug dumps should show /responses URL when in codex_responses mode."""
     import json
     agent = _build_agent(monkeypatch)
     agent.base_url = "http://127.0.0.1:9208/v1"
     agent.logs_dir = tmp_path
+    monkeypatch.setenv("YOUTAB_AGENT_DUMP_REQUEST_STDOUT", "1")
 
-    dump_file = agent._dump_api_request_debug(_codex_request_kwargs(), reason="preflight")
+    request = _codex_request_kwargs()
+    request["input"] = [{"role": "user", "content": "private-dump-sentinel"}]
+    dump_file = agent._dump_api_request_debug(request, reason="preflight")
 
     payload = json.loads(dump_file.read_text(encoding="utf-8"))
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/responses"
+    assert "private-dump-sentinel" not in capsys.readouterr().out
 
 
 def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path):

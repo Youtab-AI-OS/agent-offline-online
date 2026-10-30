@@ -1001,7 +1001,7 @@ def init_agent(
             agent.client = None
             agent._client_kwargs = {}
             if not agent.quiet_mode:
-                print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
+                print("🤖 AI Agent initialized (AWS Bedrock + AnthropicBedrock SDK)")
         else:
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
@@ -1107,7 +1107,7 @@ def init_agent(
         agent._client_kwargs = {}
         if not agent.quiet_mode:
             _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
-            print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
+            print(f"🤖 AI Agent initialized (AWS Bedrock{_gr_label})")
     else:
         if api_key and base_url:
             # Explicit credentials from CLI/gateway — construct directly.

@@ -39,7 +39,7 @@ from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
 from agent.turn_context import drop_stale_api_content
-from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
+from utils import base_url_host_matches, base_url_hostname, atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -1796,9 +1796,6 @@ def dump_api_request_debug(
         atomic_json_write(dump_file, _redacted_payload, default=str)
 
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
-
-        if env_var_enabled("YOUTAB_AGENT_DUMP_REQUEST_STDOUT"):
-            print(json.dumps(_redacted_payload, ensure_ascii=False, indent=2, default=str))
 
         return dump_file
     except Exception:

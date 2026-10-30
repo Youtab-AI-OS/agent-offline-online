@@ -1956,13 +1956,7 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
         entry["summary_truncated"] = True
         if spill_path:
             entry["summary_full_path"] = spill_path
-        logger.debug(
-            "[subagent-%s] summary trimmed %d → ~%d chars (spill=%s)",
-            entry.get("task_index", "?"),
-            original_len,
-            cap,
-            spill_path or "none",
-        )
+        logger.debug("Subagent summary trimmed %d → ~%d chars", original_len, cap)
 
 
 def _run_single_child(
@@ -2208,8 +2202,7 @@ def _run_single_child(
             is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
             duration = round(time.monotonic() - child_start, 2)
             logger.warning(
-                "Subagent %d %s after %.1fs",
-                task_index,
+                "Subagent %s after %.1fs",
                 "timed out" if is_timeout else f"raised {type(_timeout_exc).__name__}",
                 duration,
             )
@@ -2236,11 +2229,7 @@ def _run_single_child(
                     goal=goal,
                 )
                 if diagnostic_path:
-                    logger.warning(
-                        "Subagent %d 0-API-call timeout — diagnostic written to %s",
-                        task_index,
-                        diagnostic_path,
-                    )
+                    logger.warning("Subagent 0-API-call timeout — diagnostic written")
 
             if child_progress_cb:
                 try:
