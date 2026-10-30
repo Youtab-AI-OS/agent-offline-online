@@ -185,6 +185,17 @@ class TestSSRFGuardedHttpxClient:
             with pytest.raises(SSRFConnectionBlocked, match="metadata"):
                 _resolved_http_connect_ips("example.com", 80, "http")
 
+    def test_explicit_local_endpoint_still_blocks_metadata(self):
+        with _resolves_to("127.0.0.1"):
+            assert _resolved_http_connect_ips(
+                "localhost", 16731, "http", allow_private_ips=True
+            ) == ["127.0.0.1"]
+        with _resolves_to("169.254.169.254"):
+            with pytest.raises(SSRFConnectionBlocked, match="metadata"):
+                _resolved_http_connect_ips(
+                    "localhost", 16731, "http", allow_private_ips=True
+                )
+
 
     @pytest.mark.asyncio
     async def test_async_backend_blocks_unix_socket_connects(self):

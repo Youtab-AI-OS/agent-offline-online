@@ -524,7 +524,9 @@ def _safe_connect_scheme(host: str, port: int, schemes_by_origin: dict[tuple[str
     return schemes_by_origin.get((host, port)) or ("https" if port == 443 else "http")
 
 
-def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
+def _resolved_http_connect_ips(
+    host: str, port: int, scheme: str, *, allow_private_ips: bool = False
+) -> list[str]:
     """Resolve and validate *host* for one HTTP connect attempt.
 
     Unlike :func:`is_safe_url`, this is called from the HTTP transport at the
@@ -569,7 +571,7 @@ def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
                 f"Blocked request to cloud metadata address during connect: {hostname} -> {ip_str}"
             )
 
-        if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
+        if not allow_private_ips and not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
             raise SSRFConnectionBlocked(
                 f"Blocked request to private/internal address during connect: {hostname} -> {ip_str}"
             )
@@ -634,11 +636,12 @@ class _SSRFGuardedAsyncNetworkBackend:
 
 
 class _SSRFGuardedNetworkBackend:
-    def __init__(self, schemes_by_origin_var: Any):
+    def __init__(self, schemes_by_origin_var: Any, *, allow_private_ips: bool = False):
         from httpcore._backends.sync import SyncBackend
 
         self._backend = SyncBackend()
         self._schemes_by_origin_var = schemes_by_origin_var
+        self._allow_private_ips = allow_private_ips
 
     def connect_tcp(
         self,
@@ -652,7 +655,9 @@ class _SSRFGuardedNetworkBackend:
 
         schemes_by_origin = self._schemes_by_origin_var.get({})
         scheme = _safe_connect_scheme(host, port, schemes_by_origin)
-        ips = _resolved_http_connect_ips(host, port, scheme)
+        ips = _resolved_http_connect_ips(
+            host, port, scheme, allow_private_ips=self._allow_private_ips
+        )
 
         last_exc: Exception | None = None
         for ip in ips:
@@ -716,7 +721,7 @@ def ssrf_safe_async_http_transport(**kwargs: Any) -> Any:
     return _Transport(**kwargs)
 
 
-def ssrf_safe_http_transport(**kwargs: Any) -> Any:
+def ssrf_safe_http_transport(*, allow_private_ips: bool = False, **kwargs: Any) -> Any:
     """Return an httpx sync transport that pins direct TCP connects to vetted IPs."""
     import contextvars
     import httpx
@@ -727,7 +732,7 @@ def ssrf_safe_http_transport(**kwargs: Any) -> Any:
         def __init__(self, **transport_kwargs: Any):
             super().__init__(**transport_kwargs)
             self._pool._network_backend = _SSRFGuardedNetworkBackend(  # type: ignore[attr-defined]
-                schemes_by_origin_var
+                schemes_by_origin_var, allow_private_ips=allow_private_ips
             )
 
         def handle_request(self, request: Any) -> Any:
