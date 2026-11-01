@@ -22,19 +22,24 @@ or app bundle to App Store Connect.
 
 ## Required work before submission
 
-1. Define the Store product boundary. Keep runtime code within the reviewed
-   app bundle and sandbox container, or make the Store app a remote client.
-   Any code-download feature needs a documented basis under Apple's rules.
-2. Make all file access and subprocess behavior work inside App Sandbox. Use
+1. Preserve local execution with optional server and cloud-model connections.
+   Embed the reviewed runtime and its helper executables in the app bundle,
+   sign them for sandbox inheritance, and keep mutable state inside the app
+   container. Do not run the existing network bootstrap installer.
+2. Inventory every post-install code path (skills, plugins, package managers,
+   model providers, shell tools). Either include the functionality in the
+   reviewed bundle or obtain a documented basis under Apple's executable-code
+   rules. Keep cloud-model access available without letting it install code.
+3. Make all file access and subprocess behavior work inside App Sandbox. Use
    user-selected file permissions and security-scoped bookmarks where needed.
-3. Disable the first-launch installer, self-update, and app-swap flows in the
+4. Disable the first-launch installer, self-update, and app-swap flows in the
    Store variant. Apple must distribute app updates.
-4. Add separate MAS entitlements, bundle configuration, provisioning profile,
+5. Add separate MAS entitlements, bundle configuration, provisioning profile,
    and `mas-dev`/`mas` build targets. Do not reuse Developer ID signing.
-5. Build and launch a `mas-dev` app on a clean macOS account. Test onboarding,
+6. Build and launch a `mas-dev` app on a clean macOS account. Test onboarding,
    chat, screenshot save, permissions, files, updates, and quit/relaunch under
    the sandbox. Resolve all sandbox denial logs.
-6. Produce the signed Store package, validate it, and upload to App Store
+7. Produce the signed Store package, validate it, and upload to App Store
    Connect only after the owner approves the final submission.
 
 The inline screenshot preview change is independent of this migration and can
