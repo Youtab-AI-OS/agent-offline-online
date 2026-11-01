@@ -275,16 +275,28 @@ function childrenToText(children: unknown): string {
   return ''
 }
 
+function LinkedImage({ children, path }: { children: ComponentProps<'a'>['children']; path: string }) {
+  return <MarkdownImage alt={childrenToText(children) || mediaName(path)} className="max-h-56 max-w-80" src={path} />
+}
+
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
+    if (mediaKind(mediaPath) === 'image') {
+      return <LinkedImage path={mediaPath}>{children}</LinkedImage>
+    }
+
     return <MediaAttachment path={mediaPath} />
   }
 
   const previewTarget = previewTargetFromMarkdownHref(href)
 
   if (previewTarget) {
+    if (mediaKind(previewTarget) === 'image') {
+      return <LinkedImage path={previewTarget}>{children}</LinkedImage>
+    }
+
     return <PreviewAttachment source="explicit-link" target={previewTarget} />
   }
 
@@ -298,6 +310,10 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
         !href.startsWith('//') &&
         /\.[a-z0-9]{1,12}$/i.test(href)))
   ) {
+    if (mediaKind(href) === 'image') {
+      return <LinkedImage path={href}>{children}</LinkedImage>
+    }
+
     return <PreviewAttachment source="explicit-link" target={href} />
   }
 
