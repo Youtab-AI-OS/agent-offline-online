@@ -20,6 +20,30 @@ or app bundle to App Store Connect.
   App Store provisioning profile and a Store submission package are not yet
   available.
 
+## 2026-11-04 product decision and review blocker
+
+The owner requires the local engine, server/cloud access, and the full skill
+system. The repository contains 70 bundled skill descriptions and 76 Python,
+shell, JavaScript, or TypeScript files under `skills/`. The hub endpoint
+`POST /api/skills/hub/install` spawns the CLI installer, which downloads and
+installs skill bundles after the app was reviewed. The runtime also has paths
+that install Python and Node packages on demand.
+
+Apple's current App Review Guidelines 2.4.5(iv) and 2.5.2 restrict downloading
+or installing code that adds or changes app functionality. The current dynamic
+skill hub has not been shown to qualify for the limited programming-environment
+exception. Bundling the existing skills preserves their use, but does not
+preserve installation of arbitrary new executable skills. A compliant Store
+package that promises the unchanged hub cannot be claimed without a written
+Apple determination or a product change. No Store submission should be made
+on the assumption that a signing or packaging change resolves this.
+
+Reference: https://developer.apple.com/app-store/review/guidelines/
+
+The build Mac also lacks a Mac App Store provisioning profile and a Mac
+Installer Distribution identity. The Apple Distribution app-signing identity
+alone does not complete the upload package.
+
 ## Required work before submission
 
 1. Preserve local execution with optional server and cloud-model connections.
