@@ -79,3 +79,31 @@ describe('MarkdownImage media routing', () => {
     expect(container.querySelector('audio')).toBeNull()
   })
 })
+
+describe('linked screenshot preview', () => {
+  const originalDesktop = window.youtabDesktop
+
+  beforeEach(() => {
+    Object.defineProperty(window, 'youtabDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => REMOTE_IMAGE_DATA_URL) }
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    Object.defineProperty(window, 'youtabDesktop', { configurable: true, value: originalDesktop })
+  })
+
+  it('shows a compact, saveable image instead of a file-link card', async () => {
+    render(<MarkdownTextContent isRunning={false} text="[Screenshot](/tmp/screen.png)" />)
+
+    const image = await screen.findByRole('img', { name: 'Screenshot' })
+
+    await waitFor(() => expect(image.getAttribute('src')).toBe(REMOTE_IMAGE_DATA_URL))
+    expect(image.className).toContain('max-h-56')
+    expect(image.className).toContain('max-w-80')
+    expect(screen.getAllByRole('button', { name: 'Download image' }).length).toBeGreaterThan(0)
+    expect(screen.queryByText('Open Preview')).toBeNull()
+  })
+})
